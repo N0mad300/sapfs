@@ -185,6 +185,9 @@ struct FlacFile {
     uint64_t current_sample;
     uint64_t target_sample;
     int seeking;
+
+    /* Store original bit depth for conversion */
+    unsigned int original_bits_per_sample;
     
     /* Error handling */
     char error_msg[512];
@@ -256,7 +259,10 @@ static void metadata_callback(
     if (metadata->type == FLAC__METADATA_TYPE_STREAMINFO) {
         flac->format.sample_rate = metadata->data.stream_info.sample_rate;
         flac->format.num_channels = metadata->data.stream_info.channels;
-        flac->format.bits_per_sample = metadata->data.stream_info.bits_per_sample;
+
+        flac->original_bits_per_sample = metadata->data.stream_info.bits_per_sample;
+
+        flac->format.bits_per_sample = 16;
         flac->format.total_samples = metadata->data.stream_info.total_samples;
         
         /* Always output as 16-bit for consistency */
@@ -404,7 +410,7 @@ size_t flac_read_samples(FlacFile* flac, void* buffer, size_t num_samples) {
             
             /* Convert and copy samples */
             size_t channels = flac->format.num_channels;
-            size_t bits = flac->format.bits_per_sample;
+            unsigned int bits = flac->original_bits_per_sample;
             
             for (size_t i = 0; i < to_copy; i++) {
                 for (size_t ch = 0; ch < channels; ch++) {
