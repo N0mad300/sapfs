@@ -8,6 +8,7 @@ set OUT=%OUTDIR%\audio_player.exe
 set SRC= ^
     src\main.c ^
     src\audio_decoder\wave_parser.c ^
+    src\audio_decoder\flac_parser.c ^
     src\audio_decoder\audio_decoder.c ^
     src\audio_output\audio_output.c ^
     src\audio_output\wasapi_output.c ^
@@ -22,3 +23,5 @@ if not exist %OUTDIR% mkdir %OUTDIR%
     /Fo:%OUTDIR%\ ^
     %SRC% ^
     %LIBS%
+
+del /Q %OUTDIR%\*.obj

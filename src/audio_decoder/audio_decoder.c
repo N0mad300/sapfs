@@ -1,5 +1,6 @@
 #include "audio_decoder.h"
 #include "wave_parser.h"
+#include "flac_parser.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -22,7 +23,7 @@ typedef enum {
 /* Generic decoder structure */
 struct AudioDecoder {
     DecoderType type;
-    void* decoder_instance;     /* Pointer to specific decoder (WaveFile*, etc.) */
+    void* decoder_instance;     /* Pointer to specific decoder (WaveFile*, FlacFile*, etc.) */
     AudioDecoderFormat format;
     char error_msg[256];
 };
@@ -101,18 +102,42 @@ AudioDecoder* audio_decoder_open(const char* filepath) {
             decoder->decoder_instance = wave;
             break;
         }
+
+        case DECODER_TYPE_FLAC: {
+            FlacFile* flac = flac_open(filepath);
+            if (!flac) {
+                snprintf(decoder->error_msg, sizeof(decoder->error_msg),
+                         "Failed to open FLAC file");
+                free(decoder);
+                return NULL;
+            }
+            
+            /* Get FLAC format and convert to generic format */
+            FlacFormat flac_format;
+            if (flac_get_format(flac, &flac_format) != 0) {
+                snprintf(decoder->error_msg, sizeof(decoder->error_msg),
+                         "Failed to get FLAC format: %s", flac_get_error(flac));
+                flac_close(flac);
+                free(decoder);
+                return NULL;
+            }
+            
+            /* Fill generic format */
+            decoder->format.sample_rate = flac_format.sample_rate;
+            decoder->format.num_channels = flac_format.num_channels;
+            decoder->format.bits_per_sample = flac_format.bits_per_sample;
+            decoder->format.block_align = flac_format.block_align;
+            decoder->format.total_samples = (uint32_t)flac_format.total_samples;
+            strncpy(decoder->format.codec_name, "FLAC", sizeof(decoder->format.codec_name) - 1);
+            
+            decoder->decoder_instance = flac;
+            break;
+        }
         
         case DECODER_TYPE_MP3:
             /* Future: MP3 decoder implementation */
             snprintf(decoder->error_msg, sizeof(decoder->error_msg),
                      "MP3 decoder not yet implemented");
-            free(decoder);
-            return NULL;
-            
-        case DECODER_TYPE_FLAC:
-            /* Future: FLAC decoder implementation */
-            snprintf(decoder->error_msg, sizeof(decoder->error_msg),
-                     "FLAC decoder not yet implemented");
             free(decoder);
             return NULL;
             
@@ -143,13 +168,14 @@ size_t audio_decoder_read_samples(AudioDecoder* decoder, void* buffer, size_t nu
             WaveFile* wave = (WaveFile*)decoder->decoder_instance;
             return wave_read_samples(wave, buffer, num_samples);
         }
+
+        case DECODER_TYPE_FLAC: {
+            FlacFile* flac = (FlacFile*)decoder->decoder_instance;
+            return flac_read_samples(flac, buffer, num_samples);
+        }
         
         case DECODER_TYPE_MP3:
             /* Future: MP3 read implementation */
-            return -1;
-            
-        case DECODER_TYPE_FLAC:
-            /* Future: FLAC read implementation */
             return -1;
             
         default:
@@ -167,13 +193,14 @@ int audio_decoder_seek(AudioDecoder* decoder, uint32_t sample_position) {
             WaveFile* wave = (WaveFile*)decoder->decoder_instance;
             return wave_seek(wave, sample_position);
         }
+
+        case DECODER_TYPE_FLAC: {
+            FlacFile* flac = (FlacFile*)decoder->decoder_instance;
+            return flac_seek(flac, sample_position);
+        }
         
         case DECODER_TYPE_MP3:
             /* Future: MP3 seek implementation */
-            return -1;
-            
-        case DECODER_TYPE_FLAC:
-            /* Future: FLAC seek implementation */
             return -1;
             
         default:
@@ -191,13 +218,14 @@ uint32_t audio_decoder_tell(AudioDecoder* decoder) {
             WaveFile* wave = (WaveFile*)decoder->decoder_instance;
             return wave_tell(wave);
         }
+
+        case DECODER_TYPE_FLAC: {
+            FlacFile* flac = (FlacFile*)decoder->decoder_instance;
+            return (uint32_t)flac_tell(flac);
+        }
         
         case DECODER_TYPE_MP3:
             /* Future: MP3 tell implementation */
-            return 0;
-            
-        case DECODER_TYPE_FLAC:
-            /* Future: FLAC tell implementation */
             return 0;
             
         default:
@@ -221,6 +249,11 @@ const char* audio_decoder_get_error(AudioDecoder* decoder) {
             WaveFile* wave = (WaveFile*)decoder->decoder_instance;
             return wave_get_error(wave);
         }
+
+        case DECODER_TYPE_FLAC: {
+            FlacFile* flac = (FlacFile*)decoder->decoder_instance;
+            return flac_get_error(flac);
+        }
         
         default:
             return NULL;
@@ -239,13 +272,15 @@ void audio_decoder_close(AudioDecoder* decoder) {
                 wave_close((WaveFile*)decoder->decoder_instance);
             }
             break;
+
+        case DECODER_TYPE_FLAC:
+            if (decoder->decoder_instance) {
+                flac_close((FlacFile*)decoder->decoder_instance);
+            }
+            break;
             
         case DECODER_TYPE_MP3:
             /* Future: MP3 cleanup */
-            break;
-            
-        case DECODER_TYPE_FLAC:
-            /* Future: FLAC cleanup */
             break;
             
         default:
