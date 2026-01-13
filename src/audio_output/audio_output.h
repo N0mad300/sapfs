@@ -28,13 +28,18 @@ typedef enum {
     AUDIO_STATE_PAUSED
 } AudioState;
 
+/* Platform-specific configuration (forward declaration) */
+typedef void* AudioOutputConfig;
+
 /**
- * Initialize audio output with the specified format.
+ * Initialize audio output with the specified format and platform-specific configuration.
+ * On Windows, config should be a pointer to WasapiConfig.
  * 
  * @param format Audio format specification
+ * @param config Platform-specific configuration (can be NULL for defaults)
  * @return Pointer to AudioOutput handle, or NULL on failure
  */
-AudioOutput* audio_output_init(const AudioFormat* format);
+AudioOutput* audio_output_init(const AudioFormat* format, AudioOutputConfig config);
 
 /**
  * Start audio playback.

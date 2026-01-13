@@ -10,7 +10,7 @@
  * It delegates to platform-specific implementations based on the OS.
  */
 
-AudioOutput* audio_output_init(const AudioFormat* format) {
+AudioOutput* audio_output_init(const AudioFormat* format, AudioOutputConfig config) {
     if (!format) {
         return NULL;
     }
@@ -31,7 +31,7 @@ AudioOutput* audio_output_init(const AudioFormat* format) {
     
     /* Delegate to platform-specific implementation */
 #ifdef _WIN32
-    return wasapi_output_create(format);
+    return wasapi_output_create(format, (const WasapiConfig*)config);
 #elif defined(__linux__)
     /* Future: return alsa_output_create(format); */
     return NULL;

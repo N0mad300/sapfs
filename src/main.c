@@ -5,8 +5,9 @@
 #include <string.h>
 #include <signal.h>
 
-/* For cross-platform sleep */
+/* Platform-specific includes */
 #ifdef _WIN32
+    #include "audio_output/wasapi_output.h"
     #include <windows.h>
     #define SLEEP_MS(ms) Sleep(ms)
 #else
@@ -46,18 +47,32 @@ void signal_handler(int signum) {
 
 /* Print usage information */
 void print_usage(const char* program_name) {
-    printf("Usage: %s <audio_file>\n", program_name);
+    printf("Usage: %s [OPTIONS] <audio_file>\n", program_name);
     printf("\nSimple audio player that plays various audio formats.\n");
+    printf("\nOptions:\n");
+#ifdef _WIN32
+    printf("  --exclusive      Use WASAPI exclusive mode for bit-perfect playback\n");
+    printf("                   (lower latency, requires exact format match)\n");
+    printf("  --buffer <ms>    Set buffer size in milliseconds (shared mode only)\n");
+    printf("                   Default: 1000 ms\n");
+#endif
+    printf("  -h, --help       Show this help message\n");
     printf("\nControls:\n");
     printf("  Ctrl+C - Stop playback and exit\n");
     printf("\nSupported formats:\n");
     printf("  - WAVE (.wav) - PCM uncompressed audio\n");
+    printf("  - FLAC (.flac) - Free Lossless Audio Codec\n");
     printf("  - MP3 (.mp3) - Coming soon\n");
-    printf("  - FLAC (.flac) - Coming soon\n");
     printf("\nAudio specifications:\n");
     printf("  - 8, 16, 24, or 32-bit samples\n");
     printf("  - Mono or multi-channel audio\n");
     printf("  - Sample rates from 8000 Hz to 192000 Hz\n");
+    printf("\nExamples:\n");
+    printf("  %s music.wav\n", program_name);
+#ifdef _WIN32
+    printf("  %s --exclusive music.flac\n", program_name);
+    printf("  %s --buffer 500 music.wav\n", program_name);
+#endif
 }
 
 /* Convert decoder format to output format */
@@ -123,7 +138,7 @@ void display_progress(uint32_t current_sample, uint32_t total_samples, uint32_t 
 }
 
 /* Main playback function - now codec-agnostic! */
-int play_audio_file(const char* filepath) {
+int play_audio_file(const char* filepath, int use_exclusive, unsigned int buffer_ms) {
     AudioDecoder* decoder = NULL;
     AudioOutput* audio = NULL;
     AudioDecoderFormat decoder_format;
@@ -131,8 +146,8 @@ int play_audio_file(const char* filepath) {
     int result = -1;
     
     /* Buffer for reading samples */
-    #define BUFFER_FRAMES 1024
     uint8_t* buffer = NULL;
+    size_t buffer_frames = 0;
     
     /* Open audio file with automatic format detection */
     printf("Opening file: %s\n", filepath);
@@ -155,21 +170,62 @@ int play_audio_file(const char* filepath) {
     /* Convert to audio output format */
     decoder_format_to_audio_format(&decoder_format, &audio_format);
     
-    /* Initialize audio output */
+    /* Initialize audio output with configuration */
     printf("Initializing audio output...\n");
-    audio = audio_output_init(&audio_format);
+
+#ifdef _WIN32
+    WasapiConfig config;
+    config.mode = use_exclusive ? WASAPI_MODE_EXCLUSIVE : WASAPI_MODE_SHARED;
+    config.buffer_duration_ms = buffer_ms > 0 ? buffer_ms : 0;
+    
+    audio = audio_output_init(&audio_format, &config);
+#else
+    (void)use_exclusive;  /* Unused on non-Windows platforms */
+    (void)buffer_ms;
+    audio = audio_output_init(&audio_format, NULL);
+#endif
+
     if (!audio) {
         fprintf(stderr, "Error: Failed to initialize audio output\n");
+        const char* error = audio_output_get_error(audio);
+        if (error) {
+            fprintf(stderr, "Details: %s\n", error);
+        }
         goto cleanup;
     }
     
-    /* Allocate buffer */
-    size_t buffer_size = BUFFER_FRAMES * decoder_format.block_align;
+    /* Get the actual buffer size from the audio output */
+    int output_buffer_frames = audio_output_get_available_frames(audio);
+    if (output_buffer_frames <= 0) {
+        fprintf(stderr, "Error: Failed to get output buffer size\n");
+        goto cleanup;
+    }
+    
+    if (use_exclusive) {
+        /* Use the device buffer size directly */
+        buffer_frames = output_buffer_frames;
+    } else {
+        buffer_frames = 4096;
+    }
+    
+    printf("Read buffer: %zu frames (%.2f ms)\n", 
+           buffer_frames,
+           (double)buffer_frames * 1000.0 / decoder_format.sample_rate);
+    
+    /* Allocate buffer based on calculated size */
+    size_t buffer_size = buffer_frames * decoder_format.block_align;
     buffer = (uint8_t*)malloc(buffer_size);
     if (!buffer) {
         fprintf(stderr, "Error: Failed to allocate buffer\n");
         goto cleanup;
     }
+
+#ifdef _WIN32
+    /* Boost thread priority for exclusive mode to prevent glitches */
+    if (use_exclusive) {
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    }
+#endif
     
     /* Start playback */
     printf("Starting playback...\n\n");
@@ -186,7 +242,7 @@ int play_audio_file(const char* filepath) {
     
     while (g_running) {
         /* Read decoded samples */
-        samples_read = audio_decoder_read_samples(decoder, buffer, BUFFER_FRAMES);
+        samples_read = audio_decoder_read_samples(decoder, buffer, buffer_frames);
         
         if (samples_read == 0) {
             /* End of file */
@@ -222,8 +278,9 @@ int play_audio_file(const char* filepath) {
             samples_written += written;
             total_written += written;
             
+            /* If buffer is full, wait a bit before retrying */
             if (written == 0) {
-                SLEEP_MS(10);
+                SLEEP_MS(5);
             }
         }
         
@@ -231,6 +288,13 @@ int play_audio_file(const char* filepath) {
         display_progress(audio_decoder_tell(decoder), decoder_format.total_samples, 
                         decoder_format.sample_rate);
     }
+
+#ifdef _WIN32
+    /* Restore normal thread priority */
+    if (use_exclusive) {
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
+    }
+#endif
     
     /* Wait for buffer to drain */
     if (g_running) {
@@ -270,15 +334,72 @@ int main(int argc, char** argv) {
     
     if (argc < 2) {
         print_usage(argv[0]);
+        setCursorVisible(1);
         return 1;
     }
     
-    if (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0) {
-        print_usage(argv[0]);
-        return 0;
+    /* Parse command-line arguments */
+    const char* filepath = NULL;
+    int use_exclusive = 0;
+    unsigned int buffer_ms = 0;
+    
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            print_usage(argv[0]);
+            setCursorVisible(1);
+            return 0;
+        }
+#ifdef _WIN32
+        else if (strcmp(argv[i], "--exclusive") == 0) {
+            use_exclusive = 1;
+            printf("Exclusive mode enabled\n");
+        }
+        else if (strcmp(argv[i], "--buffer") == 0) {
+            if (i + 1 < argc) {
+                buffer_ms = (unsigned int)atoi(argv[i + 1]);
+                if (buffer_ms < 10 || buffer_ms > 5000) {
+                    fprintf(stderr, "Error: Buffer size must be between 10 and 5000 ms\n");
+                    setCursorVisible(1);
+                    return 1;
+                }
+                printf("Buffer size: %u ms\n", buffer_ms);
+                i++; /* Skip next argument */
+            } else {
+                fprintf(stderr, "Error: --buffer requires a value in milliseconds\n");
+                setCursorVisible(1);
+                return 1;
+            }
+        }
+#endif
+        else if (argv[i][0] == '-') {
+            fprintf(stderr, "Error: Unknown option '%s'\n", argv[i]);
+            print_usage(argv[0]);
+            setCursorVisible(1);
+            return 1;
+        }
+        else {
+            /* This is the file path */
+            if (filepath != NULL) {
+                fprintf(stderr, "Error: Multiple file paths specified\n");
+                setCursorVisible(1);
+                return 1;
+            }
+            filepath = argv[i];
+        }
     }
     
-    int result = play_audio_file(argv[1]);
+    if (filepath == NULL) {
+        fprintf(stderr, "Error: No audio file specified\n");
+        print_usage(argv[0]);
+        setCursorVisible(1);
+        return 1;
+    }
+    
+    if (use_exclusive && buffer_ms > 0) {
+        fprintf(stderr, "Warning: --buffer option is ignored in exclusive mode\n");
+    }
+    
+    int result = play_audio_file(filepath, use_exclusive, buffer_ms);
     
     if (result == 0) {
         printf("\nPlayback completed successfully!\n");
