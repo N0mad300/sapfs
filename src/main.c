@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
+#include <time.h>
 
 /* Platform-specific includes */
 #ifdef _WIN32
@@ -221,7 +222,10 @@ int play_audio_file(const char* filepath, int use_exclusive, unsigned int buffer
     }
 
 #ifdef _WIN32
-    /* Boost thread priority for exclusive mode to prevent glitches */
+    if (!VirtualLock(buffer, buffer_size)) {
+        printf("Warning: Failed to enable VirtualLock on buffer.\n");
+    }
+
     if (use_exclusive) {
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
     }
@@ -237,6 +241,7 @@ int play_audio_file(const char* filepath, int use_exclusive, unsigned int buffer
     
     /* Playback loop - completely codec-agnostic */
     size_t samples_read;
+    clock_t last_update = 0;
     uint32_t total_written = 0;
     int consecutive_errors = 0;
     
@@ -283,10 +288,15 @@ int play_audio_file(const char* filepath, int use_exclusive, unsigned int buffer
                 SLEEP_MS(5);
             }
         }
+        clock_t now = clock();
+        double elapsed_ms = (double)(now - last_update) * 1000.0 / CLOCKS_PER_SEC;
         
-        /* Update progress display */
-        display_progress(audio_decoder_tell(decoder), decoder_format.total_samples, 
-                        decoder_format.sample_rate);
+        if (elapsed_ms >= 100.0) {
+            display_progress(audio_decoder_tell(decoder), 
+                             decoder_format.total_samples, 
+                             decoder_format.sample_rate);
+            last_update = now;
+        }
     }
 
 #ifdef _WIN32

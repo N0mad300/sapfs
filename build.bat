@@ -14,7 +14,7 @@ set SRC= ^
     src\audio_output\wasapi_output.c ^
     src\utils.c
 
-set LIBS=ole32.lib
+set LIBS=ole32.lib mmdevapi.lib avrt.lib
 
 if not exist %OUTDIR% mkdir %OUTDIR%
 

@@ -7,6 +7,7 @@
 #include <windows.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
+#include <avrt.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -41,6 +42,9 @@ struct AudioOutput {
 
     /* Event for exclusive mode synchronization */
     HANDLE buffer_ready_event;
+
+    /* MMCSS Handle */
+    HANDLE mmcss_handle;
     
     /* Error handling */
     char error_msg[512];
@@ -395,6 +399,18 @@ int audio_output_start(AudioOutput* output) {
         return 0; /* Already playing */
     }
 
+    if (output->mode == WASAPI_MODE_EXCLUSIVE) {
+        DWORD task_index = 0;
+
+        output->mmcss_handle = AvSetMmThreadCharacteristics(TEXT("Pro Audio"), &task_index);
+        
+        if (!output->mmcss_handle) {
+            printf("Warning: Failed to enable MMCSS (Pro Audio). Glitches may occur.\n");
+        } else {
+            AvSetMmThreadPriority(output->mmcss_handle, AVRT_PRIORITY_CRITICAL);
+        }
+    }
+
     /* For exclusive mode, pre-fill the buffer with silence before starting */
     if (output->mode == WASAPI_MODE_EXCLUSIVE) {
         BYTE* buffer;
@@ -439,6 +455,11 @@ int audio_output_stop(AudioOutput* output) {
     
     if (!output) {
         return -1;
+    }
+
+    if (output->mmcss_handle) {
+        AvRevertMmThreadCharacteristics(output->mmcss_handle);
+        output->mmcss_handle = NULL;
     }
     
     if (output->state == AUDIO_STATE_STOPPED) {
@@ -665,6 +686,11 @@ void audio_output_close(AudioOutput* output) {
     /* Stop playback if active */
     if (output->state != AUDIO_STATE_STOPPED) {
         audio_output_stop(output);
+    }
+
+    if (output->mmcss_handle) {
+        AvRevertMmThreadCharacteristics(output->mmcss_handle);
+        output->mmcss_handle = NULL;
     }
     
     /* Release COM interfaces */
