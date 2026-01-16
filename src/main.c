@@ -282,11 +282,6 @@ int play_audio_file(const char* filepath, int use_exclusive, unsigned int buffer
             consecutive_errors = 0;
             samples_written += written;
             total_written += written;
-            
-            /* If buffer is full, wait a bit before retrying */
-            if (written == 0) {
-                SLEEP_MS(5);
-            }
         }
         clock_t now = clock();
         double elapsed_ms = (double)(now - last_update) * 1000.0 / CLOCKS_PER_SEC;

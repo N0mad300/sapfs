@@ -99,7 +99,7 @@ AudioOutput* wasapi_output_create(const AudioFormat* format, const WasapiConfig*
     output->mode = config ? config->mode : WASAPI_MODE_SHARED;
     
     /* Initialize COM */
-    hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) {
         set_error(output, "Failed to initialize COM", hr);
         free(output);
@@ -155,6 +155,18 @@ AudioOutput* wasapi_output_create(const AudioFormat* format, const WasapiConfig*
         free(output);
         return NULL;
     }
+
+    /* Create event for buffer synchronization (Used for BOTH modes now) */
+    output->buffer_ready_event = CreateEvent(NULL, FALSE, FALSE, NULL);
+    if (!output->buffer_ready_event) {
+        set_error(output, "Failed to create buffer ready event", S_OK);
+        IAudioClient_Release(output->audio_client);
+        IMMDevice_Release(output->device);
+        IMMDeviceEnumerator_Release(output->enumerator);
+        CoUninitialize();
+        free(output);
+        return NULL;
+    }
     
     /* Configure based on mode */
     if (output->mode == WASAPI_MODE_EXCLUSIVE) {
@@ -173,16 +185,17 @@ AudioOutput* wasapi_output_create(const AudioFormat* format, const WasapiConfig*
         if (hr == S_FALSE) {
             /* Format not supported exactly, but a close match exists */
             printf("Warning: Exact format not supported in exclusive mode.\n");
-            printf("         Device suggested: %u Hz, %u ch, %u bits\n",
-                   closest_match->nSamplesPerSec,
-                   closest_match->nChannels,
-                   closest_match->wBitsPerSample);
             
             if (closest_match) {
+                printf("         Device suggested: %u Hz, %u ch, %u bits\n",
+                    closest_match->nSamplesPerSec,
+                    closest_match->nChannels,
+                    closest_match->wBitsPerSample);
                 CoTaskMemFree(closest_match);
             }
             
             set_error(output, "Format not supported in exclusive mode", S_OK);
+            CloseHandle(output->buffer_ready_event);
             IAudioClient_Release(output->audio_client);
             IMMDevice_Release(output->device);
             IMMDeviceEnumerator_Release(output->enumerator);
@@ -191,18 +204,7 @@ AudioOutput* wasapi_output_create(const AudioFormat* format, const WasapiConfig*
             return NULL;
         } else if (FAILED(hr)) {
             set_error(output, "Failed to check format support", hr);
-            IAudioClient_Release(output->audio_client);
-            IMMDevice_Release(output->device);
-            IMMDeviceEnumerator_Release(output->enumerator);
-            CoUninitialize();
-            free(output);
-            return NULL;
-        }
-
-        /* Create event for buffer synchronization */
-        output->buffer_ready_event = CreateEvent(NULL, FALSE, FALSE, NULL);
-        if (!output->buffer_ready_event) {
-            set_error(output, "Failed to create buffer ready event", S_OK);
+            CloseHandle(output->buffer_ready_event);
             IAudioClient_Release(output->audio_client);
             IMMDevice_Release(output->device);
             IMMDeviceEnumerator_Release(output->enumerator);
@@ -225,7 +227,7 @@ AudioOutput* wasapi_output_create(const AudioFormat* format, const WasapiConfig*
             return NULL;
         }
         
-        /* Use default period for exclusive mode (not minimum, for stability) */
+        /* Use default period for exclusive mode */
         buffer_duration = default_period;
         
         printf("Exclusive mode buffer: %.2f ms (device period)\n", 
@@ -235,7 +237,7 @@ AudioOutput* wasapi_output_create(const AudioFormat* format, const WasapiConfig*
         hr = IAudioClient_Initialize(
             output->audio_client,
             AUDCLNT_SHAREMODE_EXCLUSIVE,
-            AUDCLNT_STREAMFLAGS_EVENTCALLBACK,  /* Use event-driven mode */
+            AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
             buffer_duration,
             buffer_duration,
             &output->wave_format,
@@ -259,31 +261,23 @@ AudioOutput* wasapi_output_create(const AudioFormat* format, const WasapiConfig*
                         (void**)&output->audio_client
                     );
                     
-                    if (FAILED(hr)) {
-                        set_error(output, "Failed to re-activate audio client", hr);
-                        CloseHandle(output->buffer_ready_event);
-                        IMMDevice_Release(output->device);
-                        IMMDeviceEnumerator_Release(output->enumerator);
-                        CoUninitialize();
-                        free(output);
-                        return NULL;
+                    if (SUCCEEDED(hr)) {
+                        /* Calculate aligned buffer duration */
+                        buffer_duration = (REFERENCE_TIME)(
+                            10000000.0 * aligned_frames / output->wave_format.nSamplesPerSec + 0.5
+                        );
+                        
+                        /* Try again with aligned buffer */
+                        hr = IAudioClient_Initialize(
+                            output->audio_client,
+                            AUDCLNT_SHAREMODE_EXCLUSIVE,
+                            AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                            buffer_duration,
+                            buffer_duration,
+                            &output->wave_format,
+                            NULL
+                        );
                     }
-                    
-                    /* Calculate aligned buffer duration */
-                    buffer_duration = (REFERENCE_TIME)(
-                        10000000.0 * aligned_frames / output->wave_format.nSamplesPerSec + 0.5
-                    );
-                    
-                    /* Try again with aligned buffer */
-                    hr = IAudioClient_Initialize(
-                        output->audio_client,
-                        AUDCLNT_SHAREMODE_EXCLUSIVE,
-                        AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                        buffer_duration,
-                        buffer_duration,
-                        &output->wave_format,
-                        NULL
-                    );
                 }
             }
             
@@ -298,32 +292,15 @@ AudioOutput* wasapi_output_create(const AudioFormat* format, const WasapiConfig*
                 return NULL;
             }
         }
-
-        /* Set the event handle */
-        hr = IAudioClient_SetEventHandle(output->audio_client, output->buffer_ready_event);
-        if (FAILED(hr)) {
-            set_error(output, "Failed to set event handle", hr);
-            CloseHandle(output->buffer_ready_event);
-            IAudioClient_Release(output->audio_client);
-            IMMDevice_Release(output->device);
-            IMMDeviceEnumerator_Release(output->enumerator);
-            CoUninitialize();
-            free(output);
-            return NULL;
-        }
-        
-        printf("Exclusive mode initialized successfully!\n");
         
     } else {
-        /* Shared mode - standard operation */
+        /* Shared mode */
         printf("Initializing WASAPI in SHARED mode...\n");
-
-        output->buffer_ready_event = NULL;
         
         /* Use configured buffer duration or default to 1 second */
         unsigned int buffer_ms = (config && config->buffer_duration_ms > 0) 
                                  ? config->buffer_duration_ms 
-                                 : 1000;
+                                 : 100;
         buffer_duration = (REFERENCE_TIME)(buffer_ms * 10000);
         
         printf("Shared mode buffer: %u ms\n", buffer_ms);
@@ -332,7 +309,7 @@ AudioOutput* wasapi_output_create(const AudioFormat* format, const WasapiConfig*
         hr = IAudioClient_Initialize(
             output->audio_client,
             AUDCLNT_SHAREMODE_SHARED,
-            0,
+            AUDCLNT_STREAMFLAGS_EVENTCALLBACK, /* Enable Event Driven Mode */
             buffer_duration,
             0,
             &output->wave_format,
@@ -341,6 +318,7 @@ AudioOutput* wasapi_output_create(const AudioFormat* format, const WasapiConfig*
         
         if (FAILED(hr)) {
             set_error(output, "Failed to initialize shared mode", hr);
+            CloseHandle(output->buffer_ready_event);
             IAudioClient_Release(output->audio_client);
             IMMDevice_Release(output->device);
             IMMDeviceEnumerator_Release(output->enumerator);
@@ -349,12 +327,25 @@ AudioOutput* wasapi_output_create(const AudioFormat* format, const WasapiConfig*
             return NULL;
         }
     }
+
+    /* Set the event handle for both modes */
+    hr = IAudioClient_SetEventHandle(output->audio_client, output->buffer_ready_event);
+    if (FAILED(hr)) {
+        set_error(output, "Failed to set event handle", hr);
+        CloseHandle(output->buffer_ready_event);
+        IAudioClient_Release(output->audio_client);
+        IMMDevice_Release(output->device);
+        IMMDeviceEnumerator_Release(output->enumerator);
+        CoUninitialize();
+        free(output);
+        return NULL;
+    }
     
     /* Get buffer size */
     hr = IAudioClient_GetBufferSize(output->audio_client, &output->buffer_frame_count);
     if (FAILED(hr)) {
         set_error(output, "Failed to get buffer size", hr);
-        if (output->buffer_ready_event) CloseHandle(output->buffer_ready_event);
+        CloseHandle(output->buffer_ready_event);
         IAudioClient_Release(output->audio_client);
         IMMDevice_Release(output->device);
         IMMDeviceEnumerator_Release(output->enumerator);
@@ -376,7 +367,7 @@ AudioOutput* wasapi_output_create(const AudioFormat* format, const WasapiConfig*
     
     if (FAILED(hr)) {
         set_error(output, "Failed to get render client", hr);
-        if (output->buffer_ready_event) CloseHandle(output->buffer_ready_event);
+        CloseHandle(output->buffer_ready_event);
         IAudioClient_Release(output->audio_client);
         IMMDevice_Release(output->device);
         IMMDeviceEnumerator_Release(output->enumerator);
@@ -533,19 +524,20 @@ int audio_output_write(AudioOutput* output, const void* data, size_t num_samples
         return -1;
     }
 
-    /* In exclusive mode, we need to use event-driven approach */
-    if (output->mode == WASAPI_MODE_EXCLUSIVE) {
-        /* Wait for buffer ready event with timeout */
-        DWORD wait_result = WaitForSingleObject(output->buffer_ready_event, 100);
+    if (output->buffer_ready_event) {
+        /* Wait up to 2 seconds to avoid hang on error */
+        DWORD wait_result = WaitForSingleObject(output->buffer_ready_event, 2000);
         
         if (wait_result == WAIT_TIMEOUT) {
-            /* Timeout - this is unusual but not fatal */
-            return 0;
+            return 0; 
         } else if (wait_result != WAIT_OBJECT_0) {
             set_error(output, "Failed to wait for buffer ready event", S_OK);
             return -1;
         }
-        
+    }
+
+    /* Exclusive Mode Logic */
+    if (output->mode == WASAPI_MODE_EXCLUSIVE) {
         /* Buffer is ready - get it */
         hr = IAudioRenderClient_GetBuffer(
             output->render_client,
