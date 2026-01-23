@@ -216,38 +216,64 @@ int play_audio_file(const char* filepath, int use_exclusive, unsigned int buffer
         goto cleanup;
     }
     
-    size_t samples_read;
+    int is_draining = 0;
+    size_t samples_read = 0;
     clock_t last_update = 0;
+    uint32_t max_buffer_frames = decoder_format.sample_rate * 2;
     
     while (g_running) {
-        /* Read decoded samples */
-        samples_read = audio_decoder_read_samples(decoder, buffer, buffer_frames);
-        if (samples_read == 0) break;
-        
-        if (samples_read == (size_t)-1) {
-            fprintf(stderr, "\nError: Failed to read samples\n");
-            break;
+
+        if (!is_draining) {
+            samples_read = audio_decoder_read_samples(decoder, buffer, buffer_frames);
+            
+            if (samples_read == (size_t)-1) {
+                fprintf(stderr, "\nError: Failed to read samples\n");
+                break;
+            }
+            
+            if (samples_read == 0) {
+                is_draining = 1;
+            } else {
+                int written = audio_output_write(audio, buffer, samples_read);
+                if (written < 0) break;
+            }
         }
-        
-        int written = audio_output_write(audio, buffer, samples_read);
-        
-        if (written < 0) { /* error */ break; }
+
+        if (is_draining) {
+            int free_frames = audio_output_get_available_frames(audio);
+            
+            if (free_frames >= 0 && (uint32_t)free_frames >= (max_buffer_frames - 100)) {
+                display_progress(decoder_format.total_samples, 
+                                 decoder_format.total_samples, 
+                                 decoder_format.sample_rate);
+                break;
+            }
+
+            SLEEP_MS(20);
+        }
 
         clock_t now = clock();
         double elapsed_ms = (double)(now - last_update) * 1000.0 / CLOCKS_PER_SEC;
         
         if (elapsed_ms >= 100.0) {
-            display_progress(audio_decoder_tell(decoder), 
+            uint32_t decoder_pos = audio_decoder_tell(decoder);
+            int free_frames = audio_output_get_available_frames(audio);
+            
+            uint32_t queued_frames = 0;
+            if (free_frames >= 0 && (uint32_t)free_frames <= max_buffer_frames) {
+                queued_frames = max_buffer_frames - (uint32_t)free_frames;
+            }
+
+            uint32_t actual_pos = 0;
+            if (decoder_pos > queued_frames) {
+                actual_pos = decoder_pos - queued_frames;
+            }
+
+            display_progress(actual_pos, 
                              decoder_format.total_samples, 
                              decoder_format.sample_rate);
             last_update = now;
         }
-    }
-    
-    /* Wait for buffer to drain */
-    if (g_running) {
-        printf("\n\nPlayback finished. Draining buffer...\n");
-        SLEEP_MS(2000);
     }
     
     printf("\n");
