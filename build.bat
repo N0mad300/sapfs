@@ -12,6 +12,7 @@ set SRC= ^
     src\audio_decoder\audio_decoder.c ^
     src\audio_output\audio_output.c ^
     src\audio_output\wasapi_output.c ^
+    src\audio_output\ring_buffer.c ^
     src\utils.c
 
 set LIBS=ole32.lib mmdevapi.lib avrt.lib

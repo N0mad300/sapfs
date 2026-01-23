@@ -138,7 +138,6 @@ void display_progress(uint32_t current_sample, uint32_t total_samples, uint32_t 
     fflush(stdout);
 }
 
-/* Main playback function - now codec-agnostic! */
 int play_audio_file(const char* filepath, int use_exclusive, unsigned int buffer_ms) {
     AudioDecoder* decoder = NULL;
     AudioOutput* audio = NULL;
@@ -195,19 +194,7 @@ int play_audio_file(const char* filepath, int use_exclusive, unsigned int buffer
         goto cleanup;
     }
     
-    /* Get the actual buffer size from the audio output */
-    int output_buffer_frames = audio_output_get_available_frames(audio);
-    if (output_buffer_frames <= 0) {
-        fprintf(stderr, "Error: Failed to get output buffer size\n");
-        goto cleanup;
-    }
-    
-    if (use_exclusive) {
-        /* Use the device buffer size directly */
-        buffer_frames = output_buffer_frames;
-    } else {
-        buffer_frames = 4096;
-    }
+    buffer_frames = decoder_format.sample_rate / 10;
     
     printf("Read buffer: %zu frames (%.2f ms)\n", 
            buffer_frames,
@@ -220,16 +207,6 @@ int play_audio_file(const char* filepath, int use_exclusive, unsigned int buffer
         fprintf(stderr, "Error: Failed to allocate buffer\n");
         goto cleanup;
     }
-
-#ifdef _WIN32
-    if (!VirtualLock(buffer, buffer_size)) {
-        printf("Warning: Failed to enable VirtualLock on buffer.\n");
-    }
-
-    if (use_exclusive) {
-        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
-    }
-#endif
     
     /* Start playback */
     printf("Starting playback...\n\n");
@@ -239,50 +216,23 @@ int play_audio_file(const char* filepath, int use_exclusive, unsigned int buffer
         goto cleanup;
     }
     
-    /* Playback loop - completely codec-agnostic */
     size_t samples_read;
     clock_t last_update = 0;
-    uint32_t total_written = 0;
-    int consecutive_errors = 0;
     
     while (g_running) {
         /* Read decoded samples */
         samples_read = audio_decoder_read_samples(decoder, buffer, buffer_frames);
-        
-        if (samples_read == 0) {
-            /* End of file */
-            break;
-        }
+        if (samples_read == 0) break;
         
         if (samples_read == (size_t)-1) {
             fprintf(stderr, "\nError: Failed to read samples\n");
             break;
         }
         
-        /* Write samples to audio output */
-        size_t samples_written = 0;
-        while (samples_written < samples_read && g_running) {
-            int frames_to_write = (int)(samples_read - samples_written);
-            uint8_t* write_ptr = buffer + (samples_written * decoder_format.block_align);
-            
-            int written = audio_output_write(audio, write_ptr, frames_to_write);
-            
-            if (written < 0) {
-                fprintf(stderr, "\nError: Failed to write audio: %s\n",
-                        audio_output_get_error(audio));
-                consecutive_errors++;
-                if (consecutive_errors > 10) {
-                    fprintf(stderr, "Too many consecutive errors, stopping playback\n");
-                    goto cleanup;
-                }
-                SLEEP_MS(10);
-                continue;
-            }
-            
-            consecutive_errors = 0;
-            samples_written += written;
-            total_written += written;
-        }
+        int written = audio_output_write(audio, buffer, samples_read);
+        
+        if (written < 0) { /* error */ break; }
+
         clock_t now = clock();
         double elapsed_ms = (double)(now - last_update) * 1000.0 / CLOCKS_PER_SEC;
         
@@ -293,18 +243,11 @@ int play_audio_file(const char* filepath, int use_exclusive, unsigned int buffer
             last_update = now;
         }
     }
-
-#ifdef _WIN32
-    /* Restore normal thread priority */
-    if (use_exclusive) {
-        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
-    }
-#endif
     
     /* Wait for buffer to drain */
     if (g_running) {
         printf("\n\nPlayback finished. Draining buffer...\n");
-        SLEEP_MS(500);
+        SLEEP_MS(2000);
     }
     
     printf("\n");
