@@ -63,7 +63,7 @@ void print_usage(const char* program_name) {
     printf("\nSupported formats:\n");
     printf("  - WAVE (.wav) - PCM uncompressed audio\n");
     printf("  - FLAC (.flac) - Free Lossless Audio Codec\n");
-    printf("  - MP3 (.mp3) - Coming soon\n");
+    printf("  - MP3 (.mp3) - MPEG-1 Audio Layer III\n");
     printf("\nAudio specifications:\n");
     printf("  - 8, 16, 24, or 32-bit samples\n");
     printf("  - Mono or multi-channel audio\n");
@@ -196,10 +196,6 @@ int play_audio_file(const char* filepath, int use_exclusive, unsigned int buffer
     
     buffer_frames = decoder_format.sample_rate / 10;
     
-    printf("Read buffer: %zu frames (%.2f ms)\n", 
-           buffer_frames,
-           (double)buffer_frames * 1000.0 / decoder_format.sample_rate);
-    
     /* Allocate buffer based on calculated size */
     size_t buffer_size = buffer_frames * decoder_format.block_align;
     buffer = (uint8_t*)malloc(buffer_size);
@@ -303,7 +299,7 @@ int main(int argc, char** argv) {
     setCursorVisible(0);
     
     printf("========================================\n");
-    printf("    Simple Audio Player v1.0\n");
+    printf("    Simple Audio Player\n");
     printf("========================================\n\n");
     
     if (argc < 2) {

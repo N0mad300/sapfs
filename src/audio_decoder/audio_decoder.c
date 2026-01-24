@@ -1,6 +1,7 @@
 #include "audio_decoder.h"
 #include "wave_parser.h"
 #include "flac_parser.h"
+#include "mp3_parser.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -134,12 +135,34 @@ AudioDecoder* audio_decoder_open(const char* filepath) {
             break;
         }
         
-        case DECODER_TYPE_MP3:
-            /* Future: MP3 decoder implementation */
-            snprintf(decoder->error_msg, sizeof(decoder->error_msg),
-                     "MP3 decoder not yet implemented");
-            free(decoder);
-            return NULL;
+        case DECODER_TYPE_MP3: {
+            Mp3File* mp3 = mp3_open(filepath);
+            if (!mp3) {
+                snprintf(decoder->error_msg, sizeof(decoder->error_msg),
+                         "Failed to open MP3 file (Missing libmpg123-0.dll?)");
+                free(decoder);
+                return NULL;
+            }
+            
+            Mp3Format mp3_fmt;
+            if (mp3_get_format(mp3, &mp3_fmt) != 0) {
+                snprintf(decoder->error_msg, sizeof(decoder->error_msg),
+                         "Failed to get MP3 format");
+                mp3_close(mp3);
+                free(decoder);
+                return NULL;
+            }
+            
+            decoder->format.sample_rate = mp3_fmt.sample_rate;
+            decoder->format.num_channels = mp3_fmt.num_channels;
+            decoder->format.bits_per_sample = mp3_fmt.bits_per_sample;
+            decoder->format.block_align = mp3_fmt.block_align;
+            decoder->format.total_samples = (uint32_t)mp3_fmt.total_samples;
+            strncpy(decoder->format.codec_name, "MP3 (mpg123)", sizeof(decoder->format.codec_name) - 1);
+            
+            decoder->decoder_instance = mp3;
+            break;
+        }
             
         default:
             free(decoder);
@@ -174,9 +197,10 @@ size_t audio_decoder_read_samples(AudioDecoder* decoder, void* buffer, size_t nu
             return flac_read_samples(flac, buffer, num_samples);
         }
         
-        case DECODER_TYPE_MP3:
-            /* Future: MP3 read implementation */
-            return -1;
+        case DECODER_TYPE_MP3: {
+            Mp3File* mp3 = (Mp3File*)decoder->decoder_instance;
+            return mp3_read_samples(mp3, buffer, num_samples);
+        }
             
         default:
             return -1;
@@ -199,9 +223,10 @@ int audio_decoder_seek(AudioDecoder* decoder, uint32_t sample_position) {
             return flac_seek(flac, sample_position);
         }
         
-        case DECODER_TYPE_MP3:
-            /* Future: MP3 seek implementation */
-            return -1;
+        case DECODER_TYPE_MP3: {
+            Mp3File* mp3 = (Mp3File*)decoder->decoder_instance;
+            return mp3_seek(mp3, sample_position);
+        }
             
         default:
             return -1;
@@ -224,9 +249,10 @@ uint32_t audio_decoder_tell(AudioDecoder* decoder) {
             return (uint32_t)flac_tell(flac);
         }
         
-        case DECODER_TYPE_MP3:
-            /* Future: MP3 tell implementation */
-            return 0;
+        case DECODER_TYPE_MP3: {
+            Mp3File* mp3 = (Mp3File*)decoder->decoder_instance;
+            return (uint32_t)mp3_tell(mp3);
+        }
             
         default:
             return 0;
@@ -254,6 +280,11 @@ const char* audio_decoder_get_error(AudioDecoder* decoder) {
             FlacFile* flac = (FlacFile*)decoder->decoder_instance;
             return flac_get_error(flac);
         }
+
+        case DECODER_TYPE_MP3: {
+            Mp3File* mp3 = (Mp3File*)decoder->decoder_instance;
+            return mp3_get_error(mp3);
+        }
         
         default:
             return NULL;
@@ -280,7 +311,9 @@ void audio_decoder_close(AudioDecoder* decoder) {
             break;
             
         case DECODER_TYPE_MP3:
-            /* Future: MP3 cleanup */
+            if (decoder->decoder_instance) {
+                mp3_close((Mp3File*)decoder->decoder_instance);
+            }
             break;
             
         default:
