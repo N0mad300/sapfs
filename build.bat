@@ -3,7 +3,7 @@
 set CC=cl
 set CFLAGS=/W4 /O2
 set OUTDIR=dist
-set OUT=%OUTDIR%\audio_player.exe
+set OUT=%OUTDIR%\sapfs.exe
 
 set SRC= ^
     src\main.c ^
