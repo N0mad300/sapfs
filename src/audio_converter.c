@@ -21,7 +21,7 @@ void pcm16_to_float(const int16_t* src, float* dst, size_t num_samples) {
     }
 }
 
-void pcm24_to_float(const uint8_t* src, float* dst, size_t num_samples) {
+void pcm24_packed_to_float(const uint8_t* src, float* dst, size_t num_samples) {
     for (size_t i = 0; i < num_samples; i++) {
 
         int32_t val = (src[3*i+0]) | (src[3*i+1] << 8) | (src[3*i+2] << 16);
@@ -31,6 +31,14 @@ void pcm24_to_float(const uint8_t* src, float* dst, size_t num_samples) {
         }
         
         dst[i] = val / 8388608.0f;
+    }
+}
+
+void pcm24_padded_to_float(const int32_t* src, float* dst, size_t num_samples) {
+    for (size_t i = 0; i < num_samples; i++) {
+        dst[i] = (float)src[i] / 8388608.0f;
+        if (dst[i] > 1.0f) dst[i] = 1.0f;
+        if (dst[i] < -1.0f) dst[i] = -1.0f;
     }
 }
 

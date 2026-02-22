@@ -13,9 +13,12 @@ void pcm8_to_float(const uint8_t* src, float* dst, size_t num_samples);
 void pcm16_to_float(const int16_t* src, float* dst, size_t num_samples);
 
 /* 24-bit Packed (3 bytes) -> Float */
-void pcm24_to_float(const uint8_t* src, float* dst, size_t num_samples);
+void pcm24_packed_to_float(const uint8_t* src, float* dst, size_t num_samples);
 
-/* 32-bit Signed (or 24-bit in 32-bit container) -> Float */
+/* 24-bit Padded (4 bytes) -> Float */
+void pcm24_padded_to_float(const int32_t* src, float* dst, size_t num_samples);
+
+/* 32-bit Signed -> Float */
 void pcm32_to_float(const int32_t* src, float* dst, size_t num_samples);
 
 /* 32-bit Float -> Float */

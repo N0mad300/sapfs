@@ -44,8 +44,6 @@ struct WaveFile {
     uint32_t current_sample;
     char error_msg[256];
     int is_valid;
-    int must_expand_24_to_32; 
-    uint16_t file_block_align;
 };
 
 /* Helper function to read a chunk header (ID + size) */
@@ -141,17 +139,8 @@ static int parse_fmt_chunk(WaveFile* wave, uint32_t chunk_size) {
         return -1;
     }
 
-    if (fmt.bits_per_sample == 24 && fmt.block_align == expected_block_align_standard) {
-        wave->must_expand_24_to_32 = 1;
-        wave->file_block_align = fmt.block_align;
-        wave->format.bits_per_sample = 32;
-        wave->format.block_align = fmt.num_channels * 4;
-    } else {
-        wave->must_expand_24_to_32 = 0;
-        wave->file_block_align = fmt.block_align;
-        wave->format.bits_per_sample = fmt.bits_per_sample;
-        wave->format.block_align = fmt.block_align;
-    }
+    wave->format.bits_per_sample = fmt.bits_per_sample;
+    wave->format.block_align = fmt.block_align;
     
     /* Store format information */
     wave->format.audio_format = 1;
@@ -238,7 +227,7 @@ WaveFile* wave_open(const char* filepath) {
             
             /* Calculate number of samples */
             if (wave->format.block_align > 0) {
-                wave->format.num_samples = header.chunk_size / wave->file_block_align;
+                wave->format.num_samples = header.chunk_size / wave->format.block_align;
             }
             
             found_data = 1;
@@ -273,40 +262,6 @@ size_t wave_read_samples(WaveFile* wave, void* buffer, size_t num_samples) {
     size_t samples_to_read = (num_samples > samples_remaining) ? samples_remaining : num_samples;
     
     if (samples_to_read == 0) return 0;
-    
-    if (wave->must_expand_24_to_32) {
-        uint16_t file_block_align = wave->file_block_align;
-
-        uint8_t temp_buf[4096];
-        size_t max_samples_per_batch = sizeof(temp_buf) / file_block_align;
-        size_t total_read = 0;
-        int32_t* dst = (int32_t*)buffer;
-
-        while (total_read < samples_to_read) {
-            size_t to_read = samples_to_read - total_read;
-            if (to_read > max_samples_per_batch) to_read = max_samples_per_batch;
-
-            size_t read_count = fread(temp_buf, file_block_align, to_read, wave->fp);
-            if (read_count == 0) break;
-
-            uint8_t* src = temp_buf;
-            size_t elements = read_count * wave->format.num_channels;
-
-            for (size_t i = 0; i < elements; ++i) {
-                uint32_t b0 = src[0];
-                uint32_t b1 = src[1];
-                uint32_t b2 = src[2];
-                src += 3;
-
-                *dst++ = (int32_t)((b2 << 24) | (b1 << 16) | (b0 << 8));
-            }
-
-            total_read += read_count;
-        }
-
-        wave->current_sample += total_read;
-        return total_read;
-    }
 
     size_t samples_read = fread(buffer, wave->format.block_align, samples_to_read, wave->fp);
     wave->current_sample += samples_read;
@@ -321,7 +276,7 @@ int wave_seek(WaveFile* wave, uint32_t sample_position) {
         return -1;
     }
     
-    long offset = wave->data_start_pos + (long)(sample_position * wave->file_block_align);
+    long offset = wave->data_start_pos + (long)(sample_position * wave->format.block_align);
     if (fseek(wave->fp, offset, SEEK_SET) != 0) {
         printf("Failed to seek\n");
         return -1;

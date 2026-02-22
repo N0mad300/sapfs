@@ -181,8 +181,8 @@ static unsigned int __stdcall wasapi_consumer_thread(void* arg) {
         
         if (frames_needed == 0) continue;
 
-        size_t conv_bytes_needed = frames_needed * output->format.num_channels * (output->device_bits_per_sample / 8);
-        if (conv_bytes_needed > output->conv_buffer_bytes) {
+        size_t float_bytes_needed = frames_needed * float_block_align;
+        if (float_bytes_needed > output->conv_buffer_bytes) {
             IAudioRenderClient_ReleaseBuffer(
                 output->render_client, 
                 frames_needed,
@@ -191,7 +191,6 @@ static unsigned int __stdcall wasapi_consumer_thread(void* arg) {
             continue;
         }
 
-        size_t float_bytes_needed = frames_needed * float_block_align;
         size_t float_bytes_read = ring_buffer_read(output->ring_buffer, output->conv_buffer, float_bytes_needed);
         size_t frames_read = float_bytes_read / float_block_align;
 
@@ -322,7 +321,6 @@ AudioOutput* wasapi_output_create(const AudioFormat* format, const WasapiConfig*
             set_error(output, "No supported exclusive-mode PCM format found", S_OK);
             goto error_cleanup;
         }
-        printf("BPS: %d", bps);
         output->device_bits_per_sample = bps;
         
         /* Initialize in exclusive mode */

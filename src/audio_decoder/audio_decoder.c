@@ -252,8 +252,19 @@ size_t audio_decoder_read_samples(AudioDecoder* decoder, void* buffer, size_t nu
         case 16:
             pcm16_to_float((const int16_t*)decoder->raw_buffer, dst, total_samples);
             break;
+        case 24:
+            /* PACKED: 3 bytes per sample (Standard WAV) */
+            pcm24_packed_to_float((const uint8_t*)decoder->raw_buffer, dst, total_samples);
+            break;
         case 32:
-            pcm32_to_float((const int32_t*)decoder->raw_buffer, dst, total_samples);
+            if (decoder->format.valid_bits_per_sample == 24) {
+                /* PADDED: 4 bytes per sample (WAVEFORMATEXTENSIBLE 24-in-32) */
+                pcm24_padded_to_float((const int32_t*)decoder->raw_buffer, dst, total_samples);
+            }
+            else {
+                /* True 32-bit audio */
+                pcm32_to_float((const int32_t*)decoder->raw_buffer, dst, total_samples);
+            }
             break;
         default:
             return (size_t)-1;
