@@ -15,12 +15,14 @@ typedef struct FlacFile FlacFile;
 
 /* Format information extracted from FLAC file */
 typedef struct {
-    uint32_t sample_rate;       /* Sample rate in Hz */
-    uint16_t num_channels;      /* Number of channels */
-    uint16_t bits_per_sample;   /* Bits per sample */
-    uint16_t block_align;       /* Bytes per sample frame */
-    uint32_t data_size;         /* Size of decoded PCM data in bytes (estimate) */
-    uint64_t total_samples;     /* Total number of sample frames */
+    uint32_t sample_rate;           /* Sample rate in Hz */
+    uint16_t num_channels;          /* Number of channels */
+    uint16_t valid_bits_per_sample; /* Actual audio bits */
+    uint16_t bits_per_sample;       /* Bits per sample */
+    uint16_t block_align;           /* Bytes per sample frame */
+    uint32_t data_size;             /* Size of decoded PCM data in bytes (estimate) */
+    uint32_t channel_mask;          /* Speaker position mask */
+    uint64_t total_samples;         /* Total number of sample frames */
 } FlacFormat;
 
 /**

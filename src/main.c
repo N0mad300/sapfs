@@ -122,6 +122,8 @@ void decoder_format_to_audio_format(const AudioDecoderFormat* dec_fmt, AudioForm
     audio_fmt->num_channels = dec_fmt->num_channels;
     audio_fmt->bits_per_sample = dec_fmt->bits_per_sample;
     audio_fmt->block_align = dec_fmt->block_align;
+    audio_fmt->valid_bits_per_sample = dec_fmt->valid_bits_per_sample;
+    audio_fmt->channel_mask = dec_fmt->channel_mask;
 }
 
 /* Display playback progress */
@@ -256,7 +258,8 @@ int play_audio_file(const char* filepath, int use_exclusive, unsigned int buffer
             samples_read = audio_decoder_read_samples(decoder, buffer, buffer_frames);
             
             if (samples_read == (size_t)-1) {
-                fprintf(stderr, "\nError reading samples\n");
+                const char* err = audio_decoder_get_error(decoder);
+                fprintf(stderr, "\nError reading samples: %s\n", err ? err : "unknown");
                 break;
             }
             

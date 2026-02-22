@@ -15,10 +15,13 @@ typedef struct AudioOutput AudioOutput;
 
 /* Audio format specification */
 typedef struct {
-    uint32_t sample_rate;       /* Sample rate in Hz (e.g., 44100) */
-    uint16_t num_channels;      /* Number of channels (1=mono, 2=stereo) */
-    uint16_t bits_per_sample;   /* Bits per sample (8, 16, 24, 32) */
-    uint16_t block_align;       /* Bytes per sample frame */
+    uint32_t sample_rate;
+    uint16_t num_channels;
+    uint16_t bits_per_sample;
+    uint16_t valid_bits_per_sample;
+    uint16_t block_align;
+    uint32_t channel_mask;
+    int      is_float;
 } AudioFormat;
 
 /* Playback state */

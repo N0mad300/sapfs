@@ -1,4 +1,5 @@
 #include "wasapi_output.h"
+#include "..\audio_converter.h"
 #include "ring_buffer.h"
 
 /* Required for MSVC compatibility */
@@ -25,33 +26,63 @@ const IID IID_IAudioClient =
 const IID IID_IAudioRenderClient = 
     {0xF294ACFC, 0x3146, 0x4483, {0xA7, 0xBF, 0xAD, 0xDC, 0xA7, 0xC2, 0x60, 0xE2}};
 
+static const GUID KSDATAFORMAT_SUBTYPE_PCM = 
+    {0x00000001, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71}};
+
+static const GUID KSDATAFORMAT_SUBTYPE_IEEE_FLOAT =
+    {0x00000003, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71}};
+
+#define SPEAKER_FRONT_LEFT              0x1
+#define SPEAKER_FRONT_RIGHT             0x2
+#define SPEAKER_FRONT_CENTER            0x4
+#define SPEAKER_LOW_FREQUENCY           0x8
+#define SPEAKER_BACK_LEFT               0x10
+#define SPEAKER_BACK_RIGHT              0x20
+#define SPEAKER_FRONT_LEFT_OF_CENTER    0x40
+#define SPEAKER_FRONT_RIGHT_OF_CENTER   0x80
+#define SPEAKER_BACK_CENTER             0x100
+#define SPEAKER_SIDE_LEFT               0x200
+#define SPEAKER_SIDE_RIGHT              0x400
+#define SPEAKER_TOP_CENTER              0x800
+#define SPEAKER_TOP_FRONT_LEFT          0x1000
+#define SPEAKER_TOP_FRONT_CENTER        0x2000
+#define SPEAKER_TOP_FRONT_RIGHT         0x4000
+#define SPEAKER_TOP_BACK_LEFT           0x8000
+#define SPEAKER_TOP_BACK_CENTER         0x10000
+#define SPEAKER_TOP_BACK_RIGHT          0x20000
+
 /* WASAPI-specific audio output structure */
 struct AudioOutput {
     /* COM interfaces */
     IMMDeviceEnumerator* enumerator;
-    IMMDevice* device;
-    IAudioClient* audio_client;
-    IAudioRenderClient* render_client;
+    IMMDevice*           device;
+    IAudioClient*        audio_client;
+    IAudioRenderClient*  render_client;
     
     /* Audio format */
     AudioFormat format;
-    WAVEFORMATEX wave_format;
+    WAVEFORMATEXTENSIBLE wave_format;
     
     /* State */
     AudioState state;
     UINT32 buffer_frame_count;
     WasapiMode mode;
 
-    /* Event for exclusive mode synchronization */
+    int device_bits_per_sample;
+
     HANDLE buffer_ready_event;
+    HANDLE stop_event;
+    HANDLE consumer_thread;
 
     /* MMCSS Handle */
     HANDLE mmcss_handle;
 
     /* Ring Buffer */
     RingBuffer* ring_buffer;
-    HANDLE consumer_thread;
-    HANDLE stop_event;
+
+    /* Scratch buffer for PCM conversion */
+    uint8_t* conv_buffer;
+    size_t   conv_buffer_bytes;
     
     /* Error handling */
     char error_msg[512];
@@ -66,113 +97,181 @@ static void set_error(AudioOutput* output, const char* msg, HRESULT hr) {
     }
 }
 
-/* Helper function to convert AudioFormat to WAVEFORMATEX */
-static void audio_format_to_waveformatex(const AudioFormat* format, WAVEFORMATEX* wfx) {
-    wfx->wFormatTag = WAVE_FORMAT_PCM;
-    wfx->nChannels = format->num_channels;
-    wfx->nSamplesPerSec = format->sample_rate;
-    wfx->wBitsPerSample = format->bits_per_sample;
-    wfx->nBlockAlign = format->block_align;
-    wfx->nAvgBytesPerSec = format->sample_rate * format->block_align;
-    wfx->cbSize = 0;
+static DWORD get_channel_mask(int num_channels) {
+    switch (num_channels) {
+        case 1:
+            return SPEAKER_FRONT_CENTER;
+        case 2:
+            return SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+        case 3:
+            return SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER;
+        case 4:
+            return SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | 
+                   SPEAKER_BACK_LEFT  | SPEAKER_BACK_RIGHT;
+        case 5:
+            return SPEAKER_FRONT_LEFT   | SPEAKER_FRONT_RIGHT | 
+                   SPEAKER_FRONT_CENTER |
+                   SPEAKER_BACK_LEFT    | SPEAKER_BACK_RIGHT;
+        case 6:
+            return SPEAKER_FRONT_LEFT   | SPEAKER_FRONT_RIGHT | 
+                   SPEAKER_FRONT_CENTER | SPEAKER_LOW_FREQUENCY |
+                   SPEAKER_BACK_LEFT    | SPEAKER_BACK_RIGHT;
+        case 7:
+            return SPEAKER_FRONT_LEFT   | SPEAKER_FRONT_RIGHT | 
+                   SPEAKER_FRONT_CENTER | SPEAKER_LOW_FREQUENCY |
+                   SPEAKER_BACK_LEFT    | SPEAKER_BACK_RIGHT |
+                   SPEAKER_BACK_CENTER;
+        case 8:
+            return SPEAKER_FRONT_LEFT   | SPEAKER_FRONT_RIGHT | 
+                   SPEAKER_FRONT_CENTER | SPEAKER_LOW_FREQUENCY |
+                   SPEAKER_BACK_LEFT    | SPEAKER_BACK_RIGHT |
+                   SPEAKER_SIDE_LEFT    | SPEAKER_SIDE_RIGHT;
+        default:
+            return 0;
+    }
+}
+
+static void build_waveformat(const AudioFormat* format, int bits_per_sample, int is_float, WAVEFORMATEXTENSIBLE* wfex) {
+    memset(wfex, 0, sizeof(*wfex));
+    
+    wfex->Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+    wfex->Format.nChannels = format->num_channels;
+    wfex->Format.nSamplesPerSec = format->sample_rate;
+    wfex->Format.wBitsPerSample = (WORD)bits_per_sample;
+    wfex->Format.nBlockAlign = (WORD)(format->num_channels * (bits_per_sample / 8));
+    wfex->Format.nAvgBytesPerSec = format->sample_rate * wfex->Format.nBlockAlign;
+    wfex->Format.cbSize = 22;
+    
+    wfex->Samples.wValidBitsPerSample = (WORD)bits_per_sample;
+    wfex->dwChannelMask = (format->channel_mask != 0) ? format->channel_mask : get_channel_mask(format->num_channels);                
+    wfex->SubFormat = is_float ? KSDATAFORMAT_SUBTYPE_IEEE_FLOAT : KSDATAFORMAT_SUBTYPE_PCM;
 }
 
 static unsigned int __stdcall wasapi_consumer_thread(void* arg) {
     AudioOutput* output = (AudioOutput*)arg;
     HRESULT hr;
-    BYTE* buffer;
+    BYTE* device_buffer;
     HANDLE wait_handles[2] = { output->stop_event, output->buffer_ready_event };
+
+    CoInitializeEx(NULL, COINIT_MULTITHREADED);
     
-    /* 1. Register MMCSS (High Priority) */
+    /* Register MMCSS (High Priority) */
     DWORD task_index = 0;
     HANDLE mmcss = AvSetMmThreadCharacteristics(TEXT("Pro Audio"), &task_index);
-    if (mmcss) {
-        AvSetMmThreadPriority(mmcss, AVRT_PRIORITY_CRITICAL);
-    }
+    if (mmcss) AvSetMmThreadPriority(mmcss, AVRT_PRIORITY_CRITICAL);
+
+    const size_t float_block_align = output->format.num_channels * sizeof(float);
 
     while (1) {
-        /* Wait for either Stop Signal OR WASAPI Ready Event */
         DWORD wait_result = WaitForMultipleObjects(2, wait_handles, FALSE, INFINITE);
         
-        if (wait_result == WAIT_OBJECT_0) {
-            /* Stop event signaled */
-            break; 
-        }
-        
-        if (wait_result != WAIT_OBJECT_0 + 1) {
-            /* Timeout or error - unexpected */
-            continue;
-        }
+        if (wait_result == WAIT_OBJECT_0) break;         /* stop event */
+        if (wait_result != WAIT_OBJECT_0 + 1) continue;  /* unexpected */
 
-        /* WASAPI needs data! */
-        UINT32 frames_available_in_device = 0;
-        
+        UINT32 frames_needed = 0;
         if (output->mode == WASAPI_MODE_EXCLUSIVE) {
-            frames_available_in_device = output->buffer_frame_count;
+            frames_needed = output->buffer_frame_count;
         } else {
-            /* Shared mode padding check */
             UINT32 padding;
             hr = IAudioClient_GetCurrentPadding(output->audio_client, &padding);
             if (SUCCEEDED(hr)) {
-                frames_available_in_device = output->buffer_frame_count - padding;
+                frames_needed = output->buffer_frame_count - padding;
             }
         }
         
-        if (frames_available_in_device == 0) continue;
+        if (frames_needed == 0) continue;
 
-        /* Get buffer from WASAPI */
-        hr = IAudioRenderClient_GetBuffer(output->render_client, frames_available_in_device, &buffer);
-        
-        if (SUCCEEDED(hr)) {
-            /* Pull from Ring Buffer */
-            size_t bytes_needed = frames_available_in_device * output->format.block_align;
-            
-            /* NON-BLOCKING READ: Get what we have */
-            size_t bytes_read = ring_buffer_read(output->ring_buffer, buffer, bytes_needed);
-            
-            /* Fill remainder with silence (Underrun protection) */
-            if (bytes_read < bytes_needed) {
-                memset(buffer + bytes_read, 0, bytes_needed - bytes_read);
-            }
-            
-            /* Release buffer to hardware */
-            IAudioRenderClient_ReleaseBuffer(output->render_client, frames_available_in_device, 0);
+        size_t conv_bytes_needed = frames_needed * output->format.num_channels * (output->device_bits_per_sample / 8);
+        if (conv_bytes_needed > output->conv_buffer_bytes) {
+            IAudioRenderClient_ReleaseBuffer(
+                output->render_client, 
+                frames_needed,
+                AUDCLNT_BUFFERFLAGS_SILENT
+            );
+            continue;
         }
+
+        size_t float_bytes_needed = frames_needed * float_block_align;
+        size_t float_bytes_read = ring_buffer_read(output->ring_buffer, output->conv_buffer, float_bytes_needed);
+        size_t frames_read = float_bytes_read / float_block_align;
+
+        if (float_bytes_read < float_bytes_needed) {
+            memset((uint8_t*)output->conv_buffer + float_bytes_read, 0, float_bytes_needed - float_bytes_read);
+            frames_read = frames_needed;
+        }
+
+        size_t total_samples = frames_needed * output->format.num_channels;
+        const float* src     = (const float*)output->conv_buffer;
+
+        hr = IAudioRenderClient_GetBuffer(output->render_client, frames_needed, &device_buffer);
+        
+        if (FAILED(hr)) continue;
+
+        switch (output->device_bits_per_sample) {
+            case 32:
+                if (output->mode == WASAPI_MODE_SHARED) {
+                    memcpy(device_buffer, src, frames_needed * float_block_align);
+                } else {
+                    float_to_pcm32(src, (int32_t*)device_buffer, total_samples);
+                }
+                break;
+            case 24:
+                float_to_pcm24(src, device_buffer, total_samples);
+                break;
+            case 16:
+                float_to_pcm16(src, (int16_t*)device_buffer, total_samples, 1);
+                break;
+            default:
+                memset(device_buffer, 0, frames_needed * (output->device_bits_per_sample / 8) * output->format.num_channels);
+                break;
+        }
+
+        IAudioRenderClient_ReleaseBuffer(output->render_client, frames_needed, 0);
     }
 
     /* Cleanup MMCSS */
     if (mmcss) AvRevertMmThreadCharacteristics(mmcss);
+    CoUninitialize();
+    return 0;
+}
+
+static int negotiate_exclusive_format(IAudioClient* client, const AudioFormat* format, REFERENCE_TIME period, WAVEFORMATEXTENSIBLE* out_wfex) {
+    static const int depths[] = { 32, 24, 16 };
+    HRESULT hr;
+
+    for (int i = 0; i < 3; ++i) {
+        int bps = depths[i];
+        build_waveformat(format, bps, 0, out_wfex);
+
+        hr = IAudioClient_IsFormatSupported(
+            client,
+            AUDCLNT_SHAREMODE_EXCLUSIVE,
+            (WAVEFORMATEX*)out_wfex,
+            NULL
+        );
+
+        if (hr == S_OK) return bps;
+    }
+
     return 0;
 }
 
 AudioOutput* wasapi_output_create(const AudioFormat* format, const WasapiConfig* config) {
-    AudioOutput* output = NULL;
-    HRESULT hr;
-    REFERENCE_TIME buffer_duration;
-    
-    /* Validate format */
     if (!format) return NULL;
-    
-    /* Allocate output structure */
-    output = (AudioOutput*)calloc(1, sizeof(AudioOutput));
+
+    AudioOutput* output = (AudioOutput*)calloc(1, sizeof(AudioOutput));
     if (!output) return NULL;
     
-    /* Copy format and mode */
     memcpy(&output->format, format, sizeof(AudioFormat));
-    audio_format_to_waveformatex(format, &output->wave_format);
     output->state = AUDIO_STATE_STOPPED;
     output->mode = config ? config->mode : WASAPI_MODE_SHARED;
 
     /* Initialize Ring Buffer (2 Seconds Capacity) */
-    size_t ring_size = format->sample_rate * format->block_align * 2; 
+    size_t ring_size = (size_t)format->sample_rate * format->num_channels * sizeof(float) * 2; 
     output->ring_buffer = ring_buffer_create(ring_size);
-    if (!output->ring_buffer) {
-        free(output);
-        return NULL;
-    }
+    if (!output->ring_buffer) { free(output); return NULL; }
     
-    /* Initialize COM */
-    hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) {
         set_error(output, "Failed to initialize COM", hr);
         ring_buffer_destroy(output->ring_buffer);
@@ -180,7 +279,6 @@ AudioOutput* wasapi_output_create(const AudioFormat* format, const WasapiConfig*
         return NULL;
     }
     
-    /* Create device enumerator */
     hr = CoCreateInstance(
         &CLSID_MMDeviceEnumerator,
         NULL,
@@ -190,7 +288,6 @@ AudioOutput* wasapi_output_create(const AudioFormat* format, const WasapiConfig*
     );
     if (FAILED(hr)) goto error_cleanup;
     
-    /* Get default audio endpoint */
     hr = IMMDeviceEnumerator_GetDefaultAudioEndpoint(
         output->enumerator,
         eRender,
@@ -199,7 +296,6 @@ AudioOutput* wasapi_output_create(const AudioFormat* format, const WasapiConfig*
     );
     if (FAILED(hr)) goto error_cleanup;
     
-    /* Activate audio client */
     hr = IMMDevice_Activate(
         output->device,
         &IID_IAudioClient,
@@ -209,11 +305,9 @@ AudioOutput* wasapi_output_create(const AudioFormat* format, const WasapiConfig*
     );
     if (FAILED(hr)) goto error_cleanup;
 
-    /* Create event for buffer synchronization (Used for BOTH modes now) */
     output->buffer_ready_event = CreateEvent(NULL, FALSE, FALSE, NULL);
     if (!output->buffer_ready_event) goto error_cleanup;
     
-    /* Initialize based on mode */
     if (output->mode == WASAPI_MODE_EXCLUSIVE) {
         
         /* Get device period for exclusive mode */
@@ -222,6 +316,14 @@ AudioOutput* wasapi_output_create(const AudioFormat* format, const WasapiConfig*
         if (FAILED(hr)) goto error_cleanup;
 
         REFERENCE_TIME period = def_p;
+
+        int bps = negotiate_exclusive_format(output->audio_client, format, period, &output->wave_format);
+        if (bps == 0) {
+            set_error(output, "No supported exclusive-mode PCM format found", S_OK);
+            goto error_cleanup;
+        }
+        printf("BPS: %d", bps);
+        output->device_bits_per_sample = bps;
         
         /* Initialize in exclusive mode */
         hr = IAudioClient_Initialize(
@@ -230,53 +332,44 @@ AudioOutput* wasapi_output_create(const AudioFormat* format, const WasapiConfig*
             AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
             period,
             period,
-            &output->wave_format,
+            (WAVEFORMATEX*)&output->wave_format,
             NULL
         );
         
-        if (FAILED(hr)) {
-            if (hr == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED) {
-                /* Need to align buffer size */
-                UINT32 aligned_frames;
-                hr = IAudioClient_GetBufferSize(output->audio_client, &aligned_frames);
-                if (SUCCEEDED(hr)) {
-                    IAudioClient_Release(output->audio_client);
-                    
-                    /* Re-activate audio client */
-                    hr = IMMDevice_Activate(
-                        output->device,
-                        &IID_IAudioClient,
-                        CLSCTX_ALL,
-                        NULL,
-                        (void**)&output->audio_client
-                    );
-                    
-                    if (SUCCEEDED(hr)) {
-                        /* Calculate aligned buffer duration */
-                        buffer_duration = (REFERENCE_TIME)(
-                            10000000.0 * aligned_frames / output->wave_format.nSamplesPerSec + 0.5
-                        );
-                        
-                        /* Try again with aligned buffer */
-                        hr = IAudioClient_Initialize(
-                            output->audio_client,
-                            AUDCLNT_SHAREMODE_EXCLUSIVE,
-                            AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                            buffer_duration,
-                            buffer_duration,
-                            &output->wave_format,
-                            NULL
-                        );
-                    }
-                }
-            }
+        if (hr == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED) {
+            UINT32 aligned_frames;
+            hr = IAudioClient_GetBufferSize(output->audio_client, &aligned_frames);
+            if (FAILED(hr)) goto error_cleanup;
+
+            period = (REFERENCE_TIME)(10000000.0 * aligned_frames / output->wave_format.Format.nSamplesPerSec + 0.5);
+
+            IAudioClient_Release(output->audio_client);
+            hr = IMMDevice_Activate(
+                output->device, 
+                &IID_IAudioClient,
+                CLSCTX_ALL, 
+                NULL,
+                (void**)&output->audio_client
+            );
+            if (FAILED(hr)) goto error_cleanup;
+
+            hr = IAudioClient_Initialize(
+                output->audio_client,
+                AUDCLNT_SHAREMODE_EXCLUSIVE,
+                AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                period, 
+                period,
+                (WAVEFORMATEX*)&output->wave_format,
+                NULL
+            );
         }
         
     } else {
-        unsigned int buffer_ms = (config && config->buffer_duration_ms > 0) 
-                                 ? config->buffer_duration_ms 
-                                 : 100;
-        buffer_duration = (REFERENCE_TIME)(buffer_ms * 10000);
+        output->device_bits_per_sample = 32;
+        build_waveformat(format, 32, 1, &output->wave_format);
+        
+        unsigned int buffer_ms = (config && config->buffer_duration_ms > 0) ? config->buffer_duration_ms : 100;
+        REFERENCE_TIME buffer_duration = (REFERENCE_TIME)(buffer_ms * 10000);
         
         /* Initialize audio client in shared mode */
         hr = IAudioClient_Initialize(
@@ -290,17 +383,18 @@ AudioOutput* wasapi_output_create(const AudioFormat* format, const WasapiConfig*
         );
     }
 
-    if (FAILED(hr)) goto error_cleanup;
+    if (FAILED(hr)) { set_error(output, "Failed to initialize audio client", hr); goto error_cleanup; }
 
-    /* Set the event handle for both modes */
     hr = IAudioClient_SetEventHandle(output->audio_client, output->buffer_ready_event);
     if (FAILED(hr)) goto error_cleanup;
     
-    /* Get buffer size */
     hr = IAudioClient_GetBufferSize(output->audio_client, &output->buffer_frame_count);
     if (FAILED(hr)) goto error_cleanup;
+
+    output->conv_buffer_bytes = output->buffer_frame_count * output->format.num_channels * sizeof(float);
+    output->conv_buffer = (uint8_t*)malloc(output->conv_buffer_bytes);
+    if (!output->conv_buffer) goto error_cleanup;
     
-    /* Get render client */
     hr = IAudioClient_GetService(
         output->audio_client,
         &IID_IAudioRenderClient,
@@ -319,6 +413,7 @@ int audio_output_start(AudioOutput* output) {
     if (!output || output->state == AUDIO_STATE_PLAYING) return 0;
 
     output->stop_event = CreateEvent(NULL, TRUE, FALSE, NULL);
+    if (!output->stop_event) return -1;
 
     if (output->mode == WASAPI_MODE_EXCLUSIVE) {
         BYTE* buffer;
@@ -329,21 +424,16 @@ int audio_output_start(AudioOutput* output) {
         );
         
         if (SUCCEEDED(hr)) {
-            /* Fill with silence */
-            memset(buffer, 0, output->buffer_frame_count * output->format.block_align);
-            
+            memset(buffer, 0, output->buffer_frame_count * output->wave_format.Format.nBlockAlign);     
             hr = IAudioRenderClient_ReleaseBuffer(
                 output->render_client,
                 output->buffer_frame_count,
                 0
             );
-            
-            if (FAILED(hr)) {
-                set_error(output, "Failed to release initial buffer", hr);
-                return -1;
-            }
         } else {
             set_error(output, "Failed to get initial buffer", hr);
+            CloseHandle(output->stop_event);
+            output->stop_event = NULL;
             return -1;
         }
     }
@@ -352,7 +442,7 @@ int audio_output_start(AudioOutput* output) {
     if (!output->consumer_thread) return -1;
     
     HRESULT hr = IAudioClient_Start(output->audio_client);
-    if (FAILED(hr)) return -1;
+    if (FAILED(hr)) { set_error(output, "Failed to start audio client", hr); return -1; }
     
     output->state = AUDIO_STATE_PLAYING;
     return 0;
@@ -364,6 +454,7 @@ int audio_output_stop(AudioOutput* output) {
     IAudioClient_Stop(output->audio_client);
     
     if (output->stop_event && output->consumer_thread) {
+        ring_buffer_cancel(output->ring_buffer);
         SetEvent(output->stop_event);
         WaitForSingleObject(output->consumer_thread, INFINITE);
         CloseHandle(output->consumer_thread);
@@ -379,43 +470,21 @@ int audio_output_stop(AudioOutput* output) {
 }
 
 int audio_output_pause(AudioOutput* output) {
-    HRESULT hr;
-    
-    if (!output) {
-        return -1;
-    }
-    
-    if (output->state != AUDIO_STATE_PLAYING) {
-        return -1; /* Can only pause when playing */
-    }
-    
-    hr = IAudioClient_Stop(output->audio_client);
-    if (FAILED(hr)) {
-        set_error(output, "Failed to pause audio client", hr);
-        return -1;
-    }
-    
+    if (!output || output->state != AUDIO_STATE_PLAYING) return -1;
+
+    HRESULT hr = IAudioClient_Stop(output->audio_client);
+    if (FAILED(hr)) { set_error(output, "Failed to pause audio client", hr); return -1; }
+
     output->state = AUDIO_STATE_PAUSED;
     return 0;
 }
 
 int audio_output_resume(AudioOutput* output) {
-    HRESULT hr;
-    
-    if (!output) {
-        return -1;
-    }
-    
-    if (output->state != AUDIO_STATE_PAUSED) {
-        return -1; /* Can only resume when paused */
-    }
-    
-    hr = IAudioClient_Start(output->audio_client);
-    if (FAILED(hr)) {
-        set_error(output, "Failed to resume audio client", hr);
-        return -1;
-    }
-    
+    if (!output || output->state != AUDIO_STATE_PAUSED) return -1;
+
+    HRESULT hr = IAudioClient_Start(output->audio_client);
+    if (FAILED(hr)) { set_error(output, "Failed to resume audio client", hr); return -1; }
+
     output->state = AUDIO_STATE_PLAYING;
     return 0;
 }
@@ -423,36 +492,30 @@ int audio_output_resume(AudioOutput* output) {
 int audio_output_write(AudioOutput* output, const void* data, size_t num_samples) {
     if (!output || !data) return -1;
 
-    size_t bytes_to_write = num_samples * output->format.block_align;
-
+    size_t bytes_to_write = num_samples * output->format.num_channels * sizeof(float);
     size_t written = ring_buffer_write(output->ring_buffer, data, bytes_to_write);
     
-    return (int)(written / output->format.block_align);
+    return (int)(written / (output->format.num_channels * sizeof(float)));
 }
 
 AudioState audio_output_get_state(AudioOutput* output) {
-    if (!output) {
-        return AUDIO_STATE_STOPPED;
-    }
+    if (!output) return AUDIO_STATE_STOPPED;
     return output->state;
 }
 
 int audio_output_get_available_frames(AudioOutput* output) {
     if (!output || !output->ring_buffer) return -1;
     
-    /* Use the getter function instead of direct access */
     size_t capacity = ring_buffer_get_capacity(output->ring_buffer);
     size_t filled = ring_buffer_available(output->ring_buffer);
-    
     size_t bytes_free = capacity - filled;
+    size_t float_frame_bytes = output->format.num_channels * sizeof(float);
     
-    return (int)(bytes_free / output->format.block_align);
+    return (int)(bytes_free / float_frame_bytes);
 }
 
 const char* audio_output_get_error(AudioOutput* output) {
-    if (!output) {
-        return "Invalid audio output handle";
-    }
+    if (!output) return "Invalid audio output handle";
     return output->error_msg[0] ? output->error_msg : NULL;
 }
 
@@ -467,6 +530,7 @@ void audio_output_close(AudioOutput* output) {
     if (output->buffer_ready_event) CloseHandle(output->buffer_ready_event);
     
     if (output->ring_buffer) ring_buffer_destroy(output->ring_buffer);
+    if (output->conv_buffer) free(output->conv_buffer);
     
     CoUninitialize();
     free(output);

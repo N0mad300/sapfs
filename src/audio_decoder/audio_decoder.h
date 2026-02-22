@@ -5,9 +5,14 @@
 #include <stddef.h>
 
 /**
- * Audio decoder abstraction layer
- * This provides a codec-independent interface for decoding audio files.
- * Codec-specific implementations (WAVE, MP3, FLAC, etc.) implement these functions.
+ * Audio decoder abstraction layer.
+ *
+ * All decoders feed into a 32-bit float internal pipeline.
+ * audio_decoder_read_samples() always returns interleaved 32-bit IEEE float frames,
+ * regardless of the source format (PCM 8/16/24/32, FLAC, MP3).
+ *
+ * The format fields bits_per_sample and block_align describe the OUTPUT frames
+ * (always 32-bit float), not the on-disk representation.
  */
 
 /* Opaque handle to audio decoder */
@@ -15,12 +20,14 @@ typedef struct AudioDecoder AudioDecoder;
 
 /* Audio format specification */
 typedef struct {
-    uint32_t sample_rate;       /* Sample rate in Hz (e.g., 44100) */
-    uint16_t num_channels;      /* Number of channels (1=mono, 2=stereo) */
-    uint16_t bits_per_sample;   /* Bits per sample (8, 16, 24, 32) */
-    uint16_t block_align;       /* Bytes per sample frame */
-    uint32_t total_samples;     /* Total number of sample frames */
-    char codec_name[32];        /* Codec name (e.g., "PCM", "MP3") */
+    uint32_t sample_rate;               /* Sample rate in Hz */
+    uint16_t num_channels;              /* Number of channels */
+    uint16_t bits_per_sample;           /* Container size */
+    uint16_t valid_bits_per_sample;     /* Actual audio bits */
+    uint16_t block_align;               /* Bytes per sample frame */
+    uint32_t total_samples;             /* Total number of sample frames */
+    uint32_t channel_mask;              /* Speaker position mask */
+    char codec_name[32];                /* Codec name */
 } AudioDecoderFormat;
 
 /**

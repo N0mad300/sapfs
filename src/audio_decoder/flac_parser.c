@@ -260,13 +260,21 @@ static void metadata_callback(
         flac->format.sample_rate = metadata->data.stream_info.sample_rate;
         flac->format.num_channels = metadata->data.stream_info.channels;
 
-        flac->original_bits_per_sample = metadata->data.stream_info.bits_per_sample;
+        unsigned bps = metadata->data.stream_info.bits_per_sample;
+        flac->original_bits_per_sample = bps;
 
-        flac->format.bits_per_sample = 16;
+        if (bps > 16) {
+            flac->format.bits_per_sample = 32;
+            flac->format.valid_bits_per_sample = bps;
+            flac->format.block_align = flac->format.num_channels * 4;
+        } else {
+            flac->format.bits_per_sample = 16;
+            flac->format.valid_bits_per_sample = 16;
+            flac->format.block_align = flac->format.num_channels * 2;
+        }
+
+        flac->format.channel_mask = 0;
         flac->format.total_samples = metadata->data.stream_info.total_samples;
-        
-        /* Always output as 16-bit for consistency */
-        flac->format.block_align = flac->format.num_channels * 2;
         flac->format.data_size = (uint32_t)(flac->format.total_samples * flac->format.block_align);
     }
 }
@@ -384,23 +392,21 @@ int flac_get_format(FlacFile* flac, FlacFormat* format) {
 }
 
 size_t flac_read_samples(FlacFile* flac, void* buffer, size_t num_samples) {
-    if (!flac || !buffer) {
-        return -1;
-    }
-    
-    if (!flac->is_valid) {
-        return -1;
-    }
-    
-    if (flac->eof_reached) {
+    if (!flac || !buffer || !flac->is_valid)
+        return (size_t)-1;
+
+    if (flac->eof_reached)
         return 0;
-    }
     
-    int16_t* output = (int16_t*)buffer;
+    int is_high_res = (flac->format.bits_per_sample == 32);
+    int32_t* out_32 = (int32_t*)buffer;
+    int16_t* out_16 = (int16_t*)buffer;
+
     size_t samples_read = 0;
+    size_t channels = flac->format.num_channels;
+    unsigned int bits = flac->original_bits_per_sample;
     
     while (samples_read < num_samples) {
-        /* If buffer has data, copy it */
         if (flac->decode_buffer_pos < flac->decode_buffer_used) {
             size_t available = flac->decode_buffer_used - flac->decode_buffer_pos;
             size_t to_copy = num_samples - samples_read;
@@ -408,32 +414,27 @@ size_t flac_read_samples(FlacFile* flac, void* buffer, size_t num_samples) {
                 to_copy = available;
             }
             
-            /* Convert and copy samples */
-            size_t channels = flac->format.num_channels;
-            unsigned int bits = flac->original_bits_per_sample;
-            
             for (size_t i = 0; i < to_copy; i++) {
                 for (size_t ch = 0; ch < channels; ch++) {
                     int32_t sample = flac->decode_buffer[
                         (flac->decode_buffer_pos + i) * channels + ch
                     ];
                     
-                    /* Convert to 16-bit */
-                    int16_t out_sample;
-                    if (bits <= 16) {
-                        out_sample = (int16_t)(sample << (16 - bits));
+                    if (is_high_res) {
+                        if (flac->original_bits_per_sample == 24) {
+                            out_32[(samples_read + i) * channels + ch] = (sample << 8);
+                        } else {
+                            out_32[(samples_read + i) * channels + ch] = sample;
+                        }
                     } else {
-                        out_sample = (int16_t)(sample >> (bits - 16));
+                        out_16[(samples_read + i) * channels + ch] = (int16_t)sample;
                     }
-                    
-                    output[(samples_read + i) * channels + ch] = out_sample;
                 }
             }
             
             samples_read += to_copy;
             flac->decode_buffer_pos += to_copy;
         } else {
-            /* Need to decode more data */
             flac->decode_buffer_used = 0;
             flac->decode_buffer_pos = 0;
             
@@ -450,7 +451,6 @@ size_t flac_read_samples(FlacFile* flac, void* buffer, size_t num_samples) {
                 }
             }
             
-            /* Check if we got any data */
             if (flac->decode_buffer_used == 0) {
                 flac->eof_reached = 1;
                 break;
