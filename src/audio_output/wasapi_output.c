@@ -1,5 +1,5 @@
 #include "wasapi_output.h"
-#include "..\audio_converter.h"
+#include "../audio_converter.h"
 #include "ring_buffer.h"
 
 /* Required for MSVC compatibility */

@@ -1,5 +1,5 @@
 #include "audio_decoder.h"
-#include "..\audio_converter.h"
+#include "../audio_converter.h"
 #include "wave_parser.h"
 #include "flac_parser.h"
 #include "mp3_parser.h"
@@ -253,18 +253,17 @@ size_t audio_decoder_read_samples(AudioDecoder* decoder, void* buffer, size_t nu
             pcm16_to_float((const int16_t*)decoder->raw_buffer, dst, total_samples);
             break;
         case 24:
-            /* PACKED: 3 bytes per sample (Standard WAV) */
-            pcm24_packed_to_float((const uint8_t*)decoder->raw_buffer, dst, total_samples);
-            break;
-        case 32:
-            if (decoder->format.valid_bits_per_sample == 24) {
+            if (decoder->src_block_align == decoder->format.num_channels * 3) {
+                /* PACKED: 3 bytes per sample (Standard WAV) */
+                pcm24_packed_to_float((const uint8_t*)decoder->raw_buffer, dst, total_samples);
+            }
+            else {
                 /* PADDED: 4 bytes per sample (WAVEFORMATEXTENSIBLE 24-in-32) */
                 pcm24_padded_to_float((const int32_t*)decoder->raw_buffer, dst, total_samples);
             }
-            else {
-                /* True 32-bit audio */
-                pcm32_to_float((const int32_t*)decoder->raw_buffer, dst, total_samples);
-            }
+            break;
+        case 32:
+            pcm32_to_float((const int32_t*)decoder->raw_buffer, dst, total_samples);
             break;
         default:
             return (size_t)-1;

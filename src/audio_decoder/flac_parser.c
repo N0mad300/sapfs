@@ -261,15 +261,15 @@ static void metadata_callback(
         flac->format.num_channels = metadata->data.stream_info.channels;
 
         unsigned bps = metadata->data.stream_info.bits_per_sample;
+
         flac->original_bits_per_sample = bps;
+        flac->format.valid_bits_per_sample = bps;
 
         if (bps > 16) {
-            flac->format.bits_per_sample = 32;
-            flac->format.valid_bits_per_sample = bps;
+            flac->format.bits_per_sample = bps;
             flac->format.block_align = flac->format.num_channels * 4;
         } else {
             flac->format.bits_per_sample = 16;
-            flac->format.valid_bits_per_sample = 16;
             flac->format.block_align = flac->format.num_channels * 2;
         }
 
@@ -398,7 +398,7 @@ size_t flac_read_samples(FlacFile* flac, void* buffer, size_t num_samples) {
     if (flac->eof_reached)
         return 0;
     
-    int is_high_res = (flac->format.bits_per_sample == 32);
+    int is_high_res = (flac->format.bits_per_sample > 16);
     int32_t* out_32 = (int32_t*)buffer;
     int16_t* out_16 = (int16_t*)buffer;
 
@@ -421,11 +421,7 @@ size_t flac_read_samples(FlacFile* flac, void* buffer, size_t num_samples) {
                     ];
                     
                     if (is_high_res) {
-                        if (flac->original_bits_per_sample == 24) {
-                            out_32[(samples_read + i) * channels + ch] = (sample << 8);
-                        } else {
-                            out_32[(samples_read + i) * channels + ch] = sample;
-                        }
+                        out_32[(samples_read + i) * channels + ch] = sample;
                     } else {
                         out_16[(samples_read + i) * channels + ch] = (int16_t)sample;
                     }
