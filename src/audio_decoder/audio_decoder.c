@@ -97,7 +97,7 @@ AudioDecoder* audio_decoder_open(const char* filepath) {
             
             decoder->src_bits_per_sample = wave_format.bits_per_sample;
             decoder->src_block_align     = wave_format.block_align;
-            decoder->src_is_float        = 0;
+            decoder->src_is_float        = wave_format.is_float;
 
             decoder->format.sample_rate = wave_format.sample_rate;
             decoder->format.num_channels = wave_format.num_channels;
@@ -106,7 +106,7 @@ AudioDecoder* audio_decoder_open(const char* filepath) {
             decoder->format.block_align = wave_format.num_channels * sizeof(float);
             decoder->format.total_samples = wave_format.num_samples;
             decoder->format.channel_mask = wave_format.channel_mask;
-            strncpy(decoder->format.codec_name, "PCM", sizeof(decoder->format.codec_name) - 1);
+            strncpy(decoder->format.codec_name, wave_format.is_float ? "PCM (float)" : "PCM", sizeof(decoder->format.codec_name) - 1);
             
             decoder->decoder_instance = wave;
             break;
@@ -207,8 +207,7 @@ size_t audio_decoder_read_samples(AudioDecoder* decoder, void* buffer, size_t nu
         switch (decoder->type) {
             case DECODER_TYPE_WAVE: {
                 WaveFile* wave = (WaveFile*)decoder->decoder_instance;
-                size_t frames = wave_read_samples(wave, buffer, num_samples);
-                return frames;
+                return wave_read_samples(wave, buffer, num_samples);
             }
             default:
                 return (size_t)-1;
@@ -258,11 +257,12 @@ size_t audio_decoder_read_samples(AudioDecoder* decoder, void* buffer, size_t nu
                 pcm24_packed_to_float((const uint8_t*)decoder->raw_buffer, dst, total_samples);
             }
             else {
-                /* PADDED: 4 bytes per sample (WAVEFORMATEXTENSIBLE 24-in-32) */
+                /* PADDED: 4 bytes per sample (FLAC) */
                 pcm24_padded_to_float((const int32_t*)decoder->raw_buffer, dst, total_samples);
             }
             break;
         case 32:
+            //* PADDED: 4 bytes per sample (WAVE)*/
             pcm32_to_float((const int32_t*)decoder->raw_buffer, dst, total_samples);
             break;
         default:

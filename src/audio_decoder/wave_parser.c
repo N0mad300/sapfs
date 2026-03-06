@@ -14,7 +14,7 @@ typedef struct {
 typedef struct {
     char subchunk_id[4];    /* "fmt " */
     uint32_t subchunk_size;
-    uint16_t audio_format;  /* Audio format (1 = PCM, 0xFFFE = EXTENSIBLE) */
+    uint16_t audio_format;  /* Audio format (1 = PCM, 3 = IEEE float, 0xFFFE = EXTENSIBLE) */
     uint16_t num_channels;
     uint32_t sample_rate;
     uint32_t byte_rate;
@@ -53,7 +53,7 @@ static int read_chunk_header(FILE* fp, ChunkHeader* header) {
 
 /* Helper function to skip a chunk */
 static int skip_chunk(FILE* fp, uint32_t chunk_size) {
-    uint32_t skip_size = (chunk_size + 1) & ~1;
+    uint32_t skip_size = (chunk_size + 1) & ~1u;
     return fseek(fp, (long)skip_size, SEEK_CUR);
 }
 
@@ -74,6 +74,7 @@ static int parse_fmt_chunk(WaveFile* wave, uint32_t chunk_size) {
 
     wave->format.channel_mask = 0;
     wave->format.valid_bits_per_sample = fmt.bits_per_sample;
+    wave->format.is_float = 0;
     
     if (fmt.audio_format == 0xFFFE) {
         /* WAVE_FORMAT_EXTENSIBLE */
@@ -94,14 +95,25 @@ static int parse_fmt_chunk(WaveFile* wave, uint32_t chunk_size) {
         wave->format.channel_mask = ext.channel_mask;
         wave->format.valid_bits_per_sample = (ext.valid_bits > 0) ? ext.valid_bits : fmt.bits_per_sample;
         
-        uint16_t actual_format = ext.sub_format[0] | (ext.sub_format[1] << 8);
-        if (actual_format != 1 && actual_format != 3) {
-            printf("Unsupported EXTENSIBLE sub-format: %u (only PCM is supported)\n", actual_format);
+        uint16_t actual_format = (uint16_t)(ext.sub_format[0] | (ext.sub_format[1] << 8));
+        if (actual_format == 3) {
+            wave->format.is_float = 1;
+        } else if (actual_format != 1) {
+            printf("Unsupported EXTENSIBLE sub-format: %u (only PCM and IEEE float are supported)", actual_format);
             return -1;
         }
     }
+    else if (fmt.audio_format == 3) {
+        wave->format.is_float = 1;
+    }
     else if (fmt.audio_format != 1) {
         printf("Unsupported audio format: %u (only PCM is supported)\n", fmt.audio_format);
+        return -1;
+    }
+
+    /* Float WAV is always 32-bit in practice; guard against exotic cases */
+    if (wave->format.is_float && fmt.bits_per_sample != 32) {
+        printf("Unsupported float bit depth: %u (only 32-bit float is supported)", fmt.bits_per_sample);
         return -1;
     }
     
@@ -139,14 +151,12 @@ static int parse_fmt_chunk(WaveFile* wave, uint32_t chunk_size) {
         return -1;
     }
 
+    wave->format.audio_format    = fmt.audio_format;
+    wave->format.num_channels    = fmt.num_channels;
+    wave->format.sample_rate     = fmt.sample_rate;
+    wave->format.byte_rate       = fmt.byte_rate;
     wave->format.bits_per_sample = fmt.bits_per_sample;
-    wave->format.block_align = fmt.block_align;
-    
-    /* Store format information */
-    wave->format.audio_format = 1;
-    wave->format.num_channels = fmt.num_channels;
-    wave->format.sample_rate = fmt.sample_rate;
-    wave->format.byte_rate = fmt.byte_rate;
+    wave->format.block_align     = fmt.block_align;
     
     return 0;
 }
@@ -264,7 +274,7 @@ size_t wave_read_samples(WaveFile* wave, void* buffer, size_t num_samples) {
     if (samples_to_read == 0) return 0;
 
     size_t samples_read = fread(buffer, wave->format.block_align, samples_to_read, wave->fp);
-    wave->current_sample += samples_read;
+    wave->current_sample += (uint32_t)samples_read;
     return samples_read;
 }
 
