@@ -4,7 +4,6 @@
 #include <string.h>
 #include <sys/types.h>
 
-/* --- Dynamic Loading Boilerplate --- */
 #ifdef _WIN32
     #include <windows.h>
     #define LIB_HANDLE HMODULE
@@ -25,7 +24,6 @@
     #endif
 #endif
 
-/* --- MPG123 Types and Enums --- */
 typedef struct mpg123_handle_struct mpg123_handle;
 
 enum mpg123_errors {
@@ -40,7 +38,6 @@ enum mpg123_enc_enum {
     MPG123_ENC_SIGNED_16 = 0x0D0
 };
 
-/* --- Function Pointers --- */
 typedef int (*func_init)(void);
 typedef void (*func_exit)(void);
 typedef mpg123_handle* (*func_new)(const char*, int*);
@@ -75,8 +72,6 @@ static LIB_HANDLE lib_handle = NULL;
 static int lib_initialized = 0;
 static char lib_error[256] = {0};
 
-/* --- Implementation --- */
-
 static int load_mpg123_library(void) {
     if (lib_initialized) return lib_handle ? 0 : -1;
     lib_initialized = 1;
@@ -87,7 +82,6 @@ static int load_mpg123_library(void) {
         return -1;
     }
 
-    /* Load symbols */
     mpg123_init_ptr = (func_init)GET_PROC_ADDRESS(lib_handle, "mpg123_init");
     mpg123_exit_ptr = (func_exit)GET_PROC_ADDRESS(lib_handle, "mpg123_exit");
     mpg123_new_ptr = (func_new)GET_PROC_ADDRESS(lib_handle, "mpg123_new");
@@ -136,7 +130,6 @@ Mp3File* mp3_open(const char* filepath) {
         return NULL;
     }
 
-    /* Open the file */
     if (mpg123_open_ptr(mp3->mh, filepath) != MPG123_OK) {
         snprintf(mp3->error_msg, sizeof(mp3->error_msg), "Failed to open MP3: %s", mpg123_strerror_ptr(mp3->mh));
         mpg123_delete_ptr(mp3->mh);
@@ -144,17 +137,14 @@ Mp3File* mp3_open(const char* filepath) {
         return NULL;
     }
 
-    /* Force format to 16-bit Signed Interleaved. */
     long rate = 0;
     int channels = 0, enc = 0;
     
     mpg123_getformat_ptr(mp3->mh, &rate, &channels, &enc);
     
-    /* Disable all formats, then enable only what we want */
     mpg123_format_none_ptr(mp3->mh);
     mpg123_format_ptr(mp3->mh, rate, channels, MPG123_ENC_SIGNED_16);
 
-    /* Populate format struct */
     mp3->format.sample_rate = (uint32_t)rate;
     mp3->format.num_channels = (uint16_t)channels;
     mp3->format.bits_per_sample = 16;

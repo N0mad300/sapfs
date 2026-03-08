@@ -4,10 +4,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* Opaque handle to an MP3 file */
 typedef struct Mp3File Mp3File;
 
-/* Format information */
 typedef struct {
     uint32_t sample_rate;
     uint16_t num_channels;

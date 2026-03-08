@@ -7,7 +7,6 @@
 #include <stdlib.h>
 #include <inttypes.h>
 
-/* Cross-platform case-insensitive string compare */
 #ifdef _WIN32
     #include <string.h>
     #define strcasecmp _stricmp
@@ -15,7 +14,6 @@
     #include <strings.h>
 #endif
 
-/* Decoder type enumeration */
 typedef enum {
     DECODER_TYPE_WAVE,
     DECODER_TYPE_MP3,
@@ -23,27 +21,25 @@ typedef enum {
     DECODER_TYPE_UNKNOWN
 } DecoderType;
 
-/* Generic decoder structure */
 struct AudioDecoder {
     DecoderType         type;
-    void*               decoder_instance;      /* Pointer to specific decoder (WaveFile*, FlacFile*, etc.) */
+    void*               decoder_instance;
+
     AudioDecoderFormat  format;
 
-    uint16_t            src_bits_per_sample;   /* On-disk bit depth */
-    uint16_t            src_block_align;       /* On-disk bytes per frame */
+    uint16_t            src_bits_per_sample;
+    uint16_t            src_block_align;
     int                 src_is_float;
 
     uint8_t*            raw_buffer;
-    size_t              raw_buffer_capacity;
+    size_t              raw_buffer_capacity;    /* in frames */
 
     char                error_msg[256];
 };
 
-/* Detect decoder type from file extension */
 static DecoderType detect_decoder_type(const char* filepath) {
     const char* ext = strrchr(filepath, '.');
     if (!ext) return DECODER_TYPE_UNKNOWN;
-
     ext++;
 
     if (strcasecmp(ext, "wav") == 0 || strcasecmp(ext, "wave") == 0) return DECODER_TYPE_WAVE;
@@ -80,16 +76,14 @@ AudioDecoder* audio_decoder_open(const char* filepath) {
         case DECODER_TYPE_WAVE: {
             WaveFile* wave = wave_open(filepath);
             if (!wave) {
-                snprintf(decoder->error_msg, sizeof(decoder->error_msg),
-                         "Failed to open WAVE file");
+                snprintf(decoder->error_msg, sizeof(decoder->error_msg), "Failed to open WAVE file");
                 free(decoder);
                 return NULL;
             }
             
             WaveFormat wave_format;
             if (wave_get_format(wave, &wave_format) != 0) {
-                snprintf(decoder->error_msg, sizeof(decoder->error_msg),
-                         "Failed to get WAVE format: %s", wave_get_error(wave));
+                snprintf(decoder->error_msg, sizeof(decoder->error_msg), "Failed to get WAVE format: %s", wave_get_error(wave));
                 wave_close(wave);
                 free(decoder);
                 return NULL;
@@ -115,16 +109,14 @@ AudioDecoder* audio_decoder_open(const char* filepath) {
         case DECODER_TYPE_FLAC: {
             FlacFile* flac = flac_open(filepath);
             if (!flac) {
-                snprintf(decoder->error_msg, sizeof(decoder->error_msg),
-                         "Failed to open FLAC file");
+                snprintf(decoder->error_msg, sizeof(decoder->error_msg), "Failed to open FLAC file");
                 free(decoder);
                 return NULL;
             }
             
             FlacFormat flac_format;
             if (flac_get_format(flac, &flac_format) != 0) {
-                snprintf(decoder->error_msg, sizeof(decoder->error_msg),
-                         "Failed to get FLAC format: %s", flac_get_error(flac));
+                snprintf(decoder->error_msg, sizeof(decoder->error_msg), "Failed to get FLAC format: %s", flac_get_error(flac));
                 flac_close(flac);
                 free(decoder);
                 return NULL;
@@ -150,16 +142,14 @@ AudioDecoder* audio_decoder_open(const char* filepath) {
         case DECODER_TYPE_MP3: {
             Mp3File* mp3 = mp3_open(filepath);
             if (!mp3) {
-                snprintf(decoder->error_msg, sizeof(decoder->error_msg),
-                         "Failed to open MP3 file (Missing libmpg123-0.dll?)");
+                snprintf(decoder->error_msg, sizeof(decoder->error_msg), "Failed to open MP3 file (Missing libmpg123-0.dll?)");
                 free(decoder);
                 return NULL;
             }
             
             Mp3Format mp3_format;
             if (mp3_get_format(mp3, &mp3_format) != 0) {
-                snprintf(decoder->error_msg, sizeof(decoder->error_msg),
-                         "Failed to get MP3 format");
+                snprintf(decoder->error_msg, sizeof(decoder->error_msg), "Failed to get MP3 format");
                 mp3_close(mp3);
                 free(decoder);
                 return NULL;
@@ -192,10 +182,7 @@ AudioDecoder* audio_decoder_open(const char* filepath) {
 }
 
 int audio_decoder_get_format(AudioDecoder* decoder, AudioDecoderFormat* format) {
-    if (!decoder || !format) {
-        return -1;
-    }
-    
+    if (!decoder || !format) return -1;
     memcpy(format, &decoder->format, sizeof(AudioDecoderFormat));
     return 0;
 }
@@ -253,7 +240,6 @@ size_t audio_decoder_read_samples(AudioDecoder* decoder, void* buffer, size_t nu
             break;
         case 24:
             if (decoder->src_block_align == decoder->format.num_channels * 3) {
-                /* PACKED: 3 bytes per sample (Standard WAV) */
                 pcm24_packed_to_float((const uint8_t*)decoder->raw_buffer, dst, total_samples);
             }
             else {

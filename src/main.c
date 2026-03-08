@@ -13,8 +13,8 @@
     #include <conio.h>
     #define SLEEP_MS(ms) Sleep(ms)
 
-    void setup_terminal_input() { /* Nothing needed for Windows conio */ }
-    void restore_terminal_input() { /* Nothing needed */ }
+    void setup_terminal_input() {}
+    void restore_terminal_input() {}
     
     int check_keypress() {
         if (_kbhit()) {
@@ -63,7 +63,6 @@
     }
 #endif
 
-/* Global flag for graceful shutdown */
 static volatile int g_running = 1;
 
 void setCursorVisible(int visible) {
@@ -96,7 +95,6 @@ void signal_handler(int signum) {
     }
 }
 
-/* Print usage information */
 void print_usage(const char* program_name) {
     printf("Usage: %s [OPTIONS] <audio_file>\n", program_name);
     printf("\nSimple audio player that plays various audio formats.\n");
@@ -126,7 +124,6 @@ void decoder_format_to_audio_format(const AudioDecoderFormat* dec_fmt, AudioForm
     audio_fmt->channel_mask = dec_fmt->channel_mask;
 }
 
-/* Display playback progress */
 void display_progress(uint32_t current_sample, uint32_t total_samples, uint32_t sample_rate, int paused) {
     double current_time = (double)current_sample / sample_rate;
     double total_time = (double)total_samples / sample_rate;
@@ -163,7 +160,6 @@ int play_audio_file(const char* filepath, int use_exclusive, unsigned int buffer
     uint8_t* buffer = NULL;
     size_t buffer_frames = 0;
     
-    /* Open audio file */
     printf("Opening file: %s\n", filepath);
     decoder = audio_decoder_open(filepath);
     if (!decoder) {
@@ -176,13 +172,11 @@ int play_audio_file(const char* filepath, int use_exclusive, unsigned int buffer
         goto cleanup;
     }
     
-    /* Display Info */
     printf("Codec: %s | %u Hz | %u Channels | %u bits\n", 
            decoder_format.codec_name, decoder_format.sample_rate, 
            decoder_format.num_channels, decoder_format.bits_per_sample);
     if (loop_mode) printf("Loop mode: ENABLED\n");
     
-    /* Convert to audio output format */
     decoder_format_to_audio_format(&decoder_format, &audio_format);
 
     /* Init Audio Output */

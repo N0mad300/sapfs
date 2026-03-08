@@ -14,7 +14,7 @@ typedef struct {
 typedef struct {
     char subchunk_id[4];    /* "fmt " */
     uint32_t subchunk_size;
-    uint16_t audio_format;  /* Audio format (1 = PCM, 3 = IEEE float, 0xFFFE = EXTENSIBLE) */
+    uint16_t audio_format;
     uint16_t num_channels;
     uint32_t sample_rate;
     uint32_t byte_rate;
@@ -46,22 +46,18 @@ struct WaveFile {
     int is_valid;
 };
 
-/* Helper function to read a chunk header (ID + size) */
 static int read_chunk_header(FILE* fp, ChunkHeader* header) {
     return fread(header, sizeof(ChunkHeader), 1, fp) == 1 ? 0 : -1;
 }
 
-/* Helper function to skip a chunk */
 static int skip_chunk(FILE* fp, uint32_t chunk_size) {
     uint32_t skip_size = (chunk_size + 1) & ~1u;
     return fseek(fp, (long)skip_size, SEEK_CUR);
 }
 
-/* Find and parse the fmt chunk */
 static int parse_fmt_chunk(WaveFile* wave, uint32_t chunk_size) {
     FormatChunk fmt;
     
-    /* Read fmt chunk header */
     if (fread(&fmt.audio_format,    sizeof(uint16_t), 1, wave->fp) != 1 ||
         fread(&fmt.num_channels,    sizeof(uint16_t), 1, wave->fp) != 1 ||
         fread(&fmt.sample_rate,     sizeof(uint32_t), 1, wave->fp) != 1 ||
@@ -111,7 +107,6 @@ static int parse_fmt_chunk(WaveFile* wave, uint32_t chunk_size) {
         return -1;
     }
 
-    /* Float WAV is always 32-bit in practice; guard against exotic cases */
     if (wave->format.is_float && fmt.bits_per_sample != 32) {
         printf("Unsupported float bit depth: %u (only 32-bit float is supported)", fmt.bits_per_sample);
         return -1;
@@ -133,7 +128,6 @@ static int parse_fmt_chunk(WaveFile* wave, uint32_t chunk_size) {
         return -1;
     }
     
-    /* Validate derived values */
     uint16_t bytes_per_sample = fmt.bits_per_sample / 8;
     uint16_t expected_block_align_standard = fmt.num_channels * bytes_per_sample;
     uint16_t expected_block_align_extended = (fmt.bits_per_sample == 24) ? fmt.num_channels * 4 : 0;
@@ -235,7 +229,6 @@ WaveFile* wave_open(const char* filepath) {
             wave->format.data_size = header.chunk_size;
             wave->data_start_pos = ftell(wave->fp);
             
-            /* Calculate number of samples */
             if (wave->format.block_align > 0) {
                 wave->format.num_samples = header.chunk_size / wave->format.block_align;
             }

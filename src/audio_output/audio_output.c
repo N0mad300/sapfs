@@ -1,6 +1,5 @@
 #include "audio_output.h"
 
-/* Platform-specific includes */
 #ifdef _WIN32
     #include "wasapi_output.h"
 #endif

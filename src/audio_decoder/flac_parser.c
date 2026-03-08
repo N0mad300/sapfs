@@ -3,7 +3,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Platform-specific dynamic loading */
 #ifdef _WIN32
     #include <windows.h>
     #define LIB_HANDLE HMODULE
@@ -24,7 +23,6 @@
     #endif
 #endif
 
-/* FLAC enums and types we need */
 typedef enum {
     FLAC__STREAM_DECODER_INIT_STATUS_OK = 0
 } FLAC__StreamDecoderInitStatus;
@@ -50,7 +48,6 @@ typedef int FLAC__bool;
 typedef int FLAC__int32;
 typedef unsigned long long FLAC__uint64;
 
-/* Forward declarations for FLAC structures */
 typedef struct FLAC__StreamDecoder FLAC__StreamDecoder;
 typedef struct FLAC__Frame FLAC__Frame;
 typedef struct FLAC__FrameHeader FLAC__FrameHeader;
@@ -90,7 +87,6 @@ struct FLAC__StreamMetadata {
     } data;
 };
 
-/* Function pointer types for FLAC API */
 typedef FLAC__StreamDecoder* (*FLAC__stream_decoder_new_func)(void);
 typedef void (*FLAC__stream_decoder_delete_func)(FLAC__StreamDecoder*);
 typedef FLAC__StreamDecoderInitStatus (*FLAC__stream_decoder_init_file_func)(
@@ -107,7 +103,6 @@ typedef FLAC__bool (*FLAC__stream_decoder_seek_absolute_func)(FLAC__StreamDecode
 typedef FLAC__bool (*FLAC__stream_decoder_finish_func)(FLAC__StreamDecoder*);
 typedef FLAC__StreamDecoderState (*FLAC__stream_decoder_get_state_func)(FLAC__StreamDecoder*);
 
-/* Global function pointers */
 static FLAC__stream_decoder_new_func flac_decoder_new = NULL;
 static FLAC__stream_decoder_delete_func flac_decoder_delete = NULL;
 static FLAC__stream_decoder_init_file_func flac_decoder_init_file = NULL;
@@ -117,12 +112,10 @@ static FLAC__stream_decoder_seek_absolute_func flac_seek_absolute = NULL;
 static FLAC__stream_decoder_finish_func flac_decoder_finish = NULL;
 static FLAC__stream_decoder_get_state_func flac_get_state = NULL;
 
-/* Library handle */
 static LIB_HANDLE flac_lib = NULL;
 static int flac_lib_initialized = 0;
 static char flac_lib_error[256] = {0};
 
-/* Load FLAC library dynamically */
 static int load_flac_library(void) {
     if (flac_lib_initialized) {
         return flac_lib != NULL ? 0 : -1;
@@ -130,15 +123,12 @@ static int load_flac_library(void) {
     
     flac_lib_initialized = 1;
     
-    /* Try to load the library */
     flac_lib = LOAD_LIBRARY(LIB_NAME);
     if (!flac_lib) {
-        snprintf(flac_lib_error, sizeof(flac_lib_error),
-                "Failed to load %s. Please install libFLAC.", LIB_NAME);
+        snprintf(flac_lib_error, sizeof(flac_lib_error), "Failed to load %s. Please install libFLAC.", LIB_NAME);
         return -1;
     }
     
-    /* Load function pointers */
     flac_decoder_new = (FLAC__stream_decoder_new_func)
         GET_PROC_ADDRESS(flac_lib, "FLAC__stream_decoder_new");
     flac_decoder_delete = (FLAC__stream_decoder_delete_func)
@@ -156,12 +146,10 @@ static int load_flac_library(void) {
     flac_get_state = (FLAC__stream_decoder_get_state_func)
         GET_PROC_ADDRESS(flac_lib, "FLAC__stream_decoder_get_state");
     
-    /* Verify all functions loaded */
-    if (!flac_decoder_new || !flac_decoder_delete || !flac_decoder_init_file ||
-        !flac_process_metadata || !flac_process_single || !flac_seek_absolute ||
-        !flac_decoder_finish || !flac_get_state) {
-        snprintf(flac_lib_error, sizeof(flac_lib_error),
-                "Failed to load FLAC functions from %s", LIB_NAME);
+    if (!flac_decoder_new       || !flac_decoder_delete || !flac_decoder_init_file  ||
+        !flac_process_metadata  || !flac_process_single || !flac_seek_absolute      ||
+        !flac_decoder_finish    || !flac_get_state) {
+        snprintf(flac_lib_error, sizeof(flac_lib_error), "Failed to load FLAC functions from %s", LIB_NAME);
         FREE_LIBRARY(flac_lib);
         flac_lib = NULL;
         return -1;
@@ -170,32 +158,26 @@ static int load_flac_library(void) {
     return 0;
 }
 
-/* Internal FlacFile structure */
 struct FlacFile {
     FLAC__StreamDecoder* decoder;
     FlacFormat format;
     
-    /* Buffering for decoded samples */
     int32_t* decode_buffer;
     size_t decode_buffer_size;
     size_t decode_buffer_used;
     size_t decode_buffer_pos;
     
-    /* Position tracking */
     uint64_t current_sample;
     uint64_t target_sample;
     int seeking;
 
-    /* Store original bit depth for conversion */
     unsigned int original_bits_per_sample;
     
-    /* Error handling */
     char error_msg[512];
     int is_valid;
     int eof_reached;
 };
 
-/* FLAC decoder callbacks */
 static FLAC__StreamDecoderWriteStatus write_callback(
     const FLAC__StreamDecoder* decoder,
     const FLAC__Frame* frame,
@@ -208,7 +190,6 @@ static FLAC__StreamDecoderWriteStatus write_callback(
     size_t samples = frame->header.blocksize;
     size_t channels = frame->header.channels;
     
-    /* If seeking, check if we've reached the target */
     if (flac->seeking) {
         if (flac->current_sample + samples > flac->target_sample) {
             flac->seeking = 0;
@@ -218,7 +199,6 @@ static FLAC__StreamDecoderWriteStatus write_callback(
         }
     }
     
-    /* Ensure buffer is large enough */
     if (samples > flac->decode_buffer_size) {
         size_t new_size = samples * 2;
         int32_t* new_buffer = (int32_t*)realloc(
@@ -226,15 +206,13 @@ static FLAC__StreamDecoderWriteStatus write_callback(
             new_size * channels * sizeof(int32_t)
         );
         if (!new_buffer) {
-            snprintf(flac->error_msg, sizeof(flac->error_msg),
-                    "Failed to allocate decode buffer");
+            snprintf(flac->error_msg, sizeof(flac->error_msg), "Failed to allocate decode buffer");
             return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
         }
         flac->decode_buffer = new_buffer;
         flac->decode_buffer_size = new_size;
     }
     
-    /* Interleave samples into buffer */
     for (size_t i = 0; i < samples; i++) {
         for (size_t ch = 0; ch < channels; ch++) {
             flac->decode_buffer[i * channels + ch] = buffer[ch][i];
@@ -291,8 +269,6 @@ static void error_callback(
             "FLAC decoder error: %d", status);
 }
 
-/* Public API implementation */
-
 FlacFile* flac_open(const char* filepath) {
     FlacFile* flac = NULL;
     FLAC__StreamDecoderInitStatus init_status;
@@ -301,19 +277,16 @@ FlacFile* flac_open(const char* filepath) {
         return NULL;
     }
     
-    /* Load FLAC library */
     if (load_flac_library() != 0) {
         fprintf(stderr, "Error: %s\n", flac_lib_error);
         return NULL;
     }
     
-    /* Allocate FlacFile structure */
     flac = (FlacFile*)calloc(1, sizeof(FlacFile));
     if (!flac) {
         return NULL;
     }
     
-    /* Create decoder */
     flac->decoder = flac_decoder_new();
     if (!flac->decoder) {
         snprintf(flac->error_msg, sizeof(flac->error_msg),
@@ -322,7 +295,6 @@ FlacFile* flac_open(const char* filepath) {
         return NULL;
     }
     
-    /* Initialize decoder */
     init_status = flac_decoder_init_file(
         flac->decoder,
         filepath,
@@ -333,39 +305,32 @@ FlacFile* flac_open(const char* filepath) {
     );
     
     if (init_status != FLAC__STREAM_DECODER_INIT_STATUS_OK) {
-        snprintf(flac->error_msg, sizeof(flac->error_msg),
-                "Failed to initialize FLAC decoder: %d", init_status);
+        snprintf(flac->error_msg, sizeof(flac->error_msg), "Failed to initialize FLAC decoder: %d", init_status);
         flac_decoder_delete(flac->decoder);
         free(flac);
         return NULL;
     }
     
-    /* Process metadata to get format info */
     if (!flac_process_metadata(flac->decoder)) {
-        snprintf(flac->error_msg, sizeof(flac->error_msg),
-                "Failed to process FLAC metadata");
+        snprintf(flac->error_msg, sizeof(flac->error_msg), "Failed to process FLAC metadata");
         flac_decoder_delete(flac->decoder);
         free(flac);
         return NULL;
     }
     
-    /* Validate format */
     if (flac->format.num_channels == 0 || flac->format.sample_rate == 0) {
-        snprintf(flac->error_msg, sizeof(flac->error_msg),
-                "Invalid FLAC format");
+        snprintf(flac->error_msg, sizeof(flac->error_msg), "Invalid FLAC format");
         flac_decoder_delete(flac->decoder);
         free(flac);
         return NULL;
     }
     
-    /* Allocate initial decode buffer */
     flac->decode_buffer_size = 4096;
     flac->decode_buffer = (int32_t*)malloc(
         flac->decode_buffer_size * flac->format.num_channels * sizeof(int32_t)
     );
     if (!flac->decode_buffer) {
-        snprintf(flac->error_msg, sizeof(flac->error_msg),
-                "Failed to allocate decode buffer");
+        snprintf(flac->error_msg, sizeof(flac->error_msg), "Failed to allocate decode buffer");
         flac_decoder_delete(flac->decoder);
         free(flac);
         return NULL;
@@ -379,13 +344,7 @@ FlacFile* flac_open(const char* filepath) {
 }
 
 int flac_get_format(FlacFile* flac, FlacFormat* format) {
-    if (!flac || !format) {
-        return -1;
-    }
-    
-    if (!flac->is_valid) {
-        return -1;
-    }
+    if (!flac || !format || !flac->is_valid) return -1;
     
     memcpy(format, &flac->format, sizeof(FlacFormat));
     return 0;
@@ -458,25 +417,15 @@ size_t flac_read_samples(FlacFile* flac, void* buffer, size_t num_samples) {
 }
 
 int flac_seek(FlacFile* flac, uint64_t sample_position) {
-    if (!flac) {
-        return -1;
-    }
+    if (!flac || !flac->is_valid) return -1;
     
-    if (!flac->is_valid) {
-        return -1;
-    }
-    
-    /* Check bounds */
     if (sample_position > flac->format.total_samples) {
-        snprintf(flac->error_msg, sizeof(flac->error_msg),
-                "Seek position out of bounds");
+        snprintf(flac->error_msg, sizeof(flac->error_msg), "Seek position out of bounds");
         return -1;
     }
     
-    /* Perform seek */
     if (!flac_seek_absolute(flac->decoder, sample_position)) {
-        snprintf(flac->error_msg, sizeof(flac->error_msg),
-                "FLAC seek failed");
+        snprintf(flac->error_msg, sizeof(flac->error_msg), "FLAC seek failed");
         return -1;
     }
     

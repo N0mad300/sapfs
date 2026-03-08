@@ -53,17 +53,14 @@ static const GUID KSDATAFORMAT_SUBTYPE_IEEE_FLOAT =
 
 /* WASAPI-specific audio output structure */
 struct AudioOutput {
-    /* COM interfaces */
     IMMDeviceEnumerator* enumerator;
     IMMDevice*           device;
     IAudioClient*        audio_client;
     IAudioRenderClient*  render_client;
     
-    /* Audio format */
     AudioFormat format;
     WAVEFORMATEXTENSIBLE wave_format;
     
-    /* State */
     AudioState state;
     UINT32 buffer_frame_count;
     WasapiMode mode;
@@ -74,21 +71,16 @@ struct AudioOutput {
     HANDLE stop_event;
     HANDLE consumer_thread;
 
-    /* MMCSS Handle */
     HANDLE mmcss_handle;
 
-    /* Ring Buffer */
     RingBuffer* ring_buffer;
 
-    /* Scratch buffer for PCM conversion */
     uint8_t* conv_buffer;
     size_t   conv_buffer_bytes;
     
-    /* Error handling */
     char error_msg[512];
 };
 
-/* Helper function to set error message */
 static void set_error(AudioOutput* output, const char* msg, HRESULT hr) {
     if (hr != S_OK) {
         snprintf(output->error_msg, sizeof(output->error_msg), "%s (HRESULT: 0x%08lX)", msg, hr);
@@ -228,7 +220,6 @@ static unsigned int __stdcall wasapi_consumer_thread(void* arg) {
         IAudioRenderClient_ReleaseBuffer(output->render_client, frames_needed, 0);
     }
 
-    /* Cleanup MMCSS */
     if (mmcss) AvRevertMmThreadCharacteristics(mmcss);
     CoUninitialize();
     return 0;
@@ -373,7 +364,7 @@ AudioOutput* wasapi_output_create(const AudioFormat* format, const WasapiConfig*
         hr = IAudioClient_Initialize(
             output->audio_client,
             AUDCLNT_SHAREMODE_SHARED,
-            AUDCLNT_STREAMFLAGS_EVENTCALLBACK, /* Enable Event Driven Mode */
+            AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
             buffer_duration,
             0,
             &output->wave_format,

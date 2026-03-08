@@ -10,9 +10,8 @@ struct RingBuffer {
     size_t write_pos;
     size_t fill_count;
     
-    /* Thread safety */
     CRITICAL_SECTION lock;
-    CONDITION_VARIABLE space_available; /* Signals writer that space opened up */
+    CONDITION_VARIABLE space_available;
     int canceled;
 };
 
@@ -38,7 +37,6 @@ void ring_buffer_destroy(RingBuffer* rb) {
     
     ring_buffer_cancel(rb);
     
-    /* Ensure no one is using it before deleting */
     EnterCriticalSection(&rb->lock);
     free(rb->buffer);
     LeaveCriticalSection(&rb->lock);
@@ -58,7 +56,6 @@ size_t ring_buffer_write(RingBuffer* rb, const void* data, size_t size) {
         size_t space_free = rb->capacity - rb->fill_count;
         
         if (space_free == 0) {
-            /* Buffer full: Wait for consumer to read data */
             SleepConditionVariableCS(&rb->space_available, &rb->lock, INFINITE);
             continue;
         }
@@ -66,14 +63,11 @@ size_t ring_buffer_write(RingBuffer* rb, const void* data, size_t size) {
         size_t chunk = size - written;
         if (chunk > space_free) chunk = space_free;
         
-        /* Handle wrap-around */
         size_t end_space = rb->capacity - rb->write_pos;
         if (chunk > end_space) {
-            /* Split write */
             memcpy(rb->buffer + rb->write_pos, input + written, end_space);
             memcpy(rb->buffer, input + written + end_space, chunk - end_space);
         } else {
-            /* Contiguous write */
             memcpy(rb->buffer + rb->write_pos, input + written, chunk);
         }
         
@@ -98,18 +92,15 @@ size_t ring_buffer_read(RingBuffer* rb, void* data, size_t size) {
         size_t end_data = rb->capacity - rb->read_pos;
         
         if (to_read > end_data) {
-            /* Split read */
             memcpy(output, rb->buffer + rb->read_pos, end_data);
             memcpy(output + end_data, rb->buffer, to_read - end_data);
         } else {
-            /* Contiguous read */
             memcpy(output, rb->buffer + rb->read_pos, to_read);
         }
         
         rb->read_pos = (rb->read_pos + to_read) % rb->capacity;
         rb->fill_count -= to_read;
         
-        /* Signal writers that space is available */
         WakeConditionVariable(&rb->space_available);
     }
     
