@@ -36,8 +36,8 @@ AudioOutput* audio_output_init(const AudioFormat* format, AudioOutputConfig conf
     return wasapi_output_create(format, (const WasapiConfig*)config);
 
 #elif defined(__APPLE__)
-    (void)config;   /* No platform-specific config on macOS */
-    return coreaudio_output_create(format);
+    (void)config;
+    return coreaudio_output_create(format, (const CoreAudioConfig*)config);
 
 #elif defined(__linux__)
     (void)config;

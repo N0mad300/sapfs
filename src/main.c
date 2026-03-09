@@ -13,16 +13,19 @@
     #include <conio.h>
     #define SLEEP_MS(ms) Sleep(ms)
 
-    void setup_terminal_input() {}
-    void restore_terminal_input() {}
+    void setup_terminal_input(void) {}
+    void restore_terminal_input(void) {}
     
-    int check_keypress() {
+    int check_keypress(void) {
         if (_kbhit()) {
             return _getch();
         }
         return -1;
     }
 #else
+#ifdef __APPLE__
+    #include "audio_output/coreaudio_output.h"
+#endif
     #include <unistd.h>
     #include <termios.h>
     #include <fcntl.h>
@@ -32,14 +35,14 @@
     static struct termios orig_termios;
     static int terminal_configured = 0;
 
-    void restore_terminal_input() {
+    void restore_terminal_input(void) {
         if (terminal_configured) {
             tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
             terminal_configured = 0;
         }
     }
 
-    void setup_terminal_input() {
+    void setup_terminal_input(void) {
         if (!isatty(STDIN_FILENO)) return;
         
         tcgetattr(STDIN_FILENO, &orig_termios);
@@ -54,10 +57,10 @@
         terminal_configured = 1;
     }
 
-    int check_keypress() {
+    int check_keypress(void) {
         unsigned char c;
         if (read(STDIN_FILENO, &c, 1) == 1) {
-            return c;
+            return (int)c;
         }
         return -1;
     }
@@ -102,6 +105,9 @@ void print_usage(const char* program_name) {
 #ifdef _WIN32
     printf("  --exclusive      Use WASAPI exclusive mode (bit-perfect)\n");
     printf("  --buffer <ms>    Set buffer size in ms (shared mode only)\n");
+#endif
+#ifdef __APPLE__
+    printf(" --exclusive       Use macOS Core Audio hog mode (bit-perfect)\n");
 #endif
     printf("  --loop           Loop playback indefinitely\n");
     printf("  -h, --help       Show this help message\n");
@@ -183,9 +189,17 @@ int play_audio_file(const char* filepath, int use_exclusive, unsigned int buffer
 #ifdef _WIN32
     WasapiConfig config;
     config.mode = use_exclusive ? WASAPI_MODE_EXCLUSIVE : WASAPI_MODE_SHARED;
-    if (use_exclusive) printf("Exclusive mode: ENABLED\n");
+    if (use_exclusive) printf("WASAPI exclusive mode: ENABLED\n");
     config.buffer_duration_ms = buffer_ms > 0 ? buffer_ms : 0;
     audio = audio_output_init(&audio_format, &config);
+#elif defined(__APPLE__)
+    {
+        CoreAudioConfig config;
+        config.mode = use_exclusive ? COREAUDIO_MODE_HOG : COREAUDIO_MODE_SHARED;
+        if (use_exclusive)
+            printf("CoreAudio hog mode: ENABLED\n");
+        audio = audio_output_init(&audio_format, &config);
+    }
 #else
     audio = audio_output_init(&audio_format, NULL);
 #endif
@@ -381,6 +395,10 @@ int main(int argc, char** argv) {
                 setCursorVisible(1);
                 return 1;
             }
+        }
+#elif defined(__APPLE__)
+        else if (strcmp(argv[i], "--exclusive") == 0) {
+            use_exclusive = 1;
         }
 #endif
         else if (strcmp(argv[i], "--loop") == 0) {
