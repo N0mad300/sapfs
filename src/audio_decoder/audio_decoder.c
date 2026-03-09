@@ -5,6 +5,7 @@
 #include "mp3_parser.h"
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <inttypes.h>
 
 #ifdef _WIN32

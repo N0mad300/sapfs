@@ -29,6 +29,6 @@ size_t audio_decoder_read_samples(AudioDecoder* decoder, void* buffer, size_t nu
 int audio_decoder_seek(AudioDecoder* decoder, uint32_t sample_position);
 uint32_t audio_decoder_tell(AudioDecoder* decoder);
 const char* audio_decoder_get_error(AudioDecoder* decoder);
-audio_decoder_close(AudioDecoder* decoder);
+void audio_decoder_close(AudioDecoder* decoder);
 
 #endif /* AUDIO_DECODER_H */
