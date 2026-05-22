@@ -2,7 +2,7 @@
 
 /* Platform-specific back-end headers */
 #ifdef _WIN32
-    #include "wasapi_output.h"
+    #include "windows_output.h"
 #elif defined(__APPLE__)
     #include "coreaudio_output.h"
 #endif
@@ -12,9 +12,9 @@
  *
  * Validates the requested format then delegates to the appropriate
  * platform back-end:
- *   Windows  → WASAPI  (wasapi_output.c)
- *   macOS    → CoreAudio AudioUnit  (coreaudio_output.c)
- *   Linux    → stub (ALSA / PipeWire planned)
+ *   Windows  -> WASAPI / ASIO  (windows_output.c)
+ *   macOS    -> CoreAudio AudioUnit  (coreaudio_output.c)
+ *   Linux    -> stub (ALSA / PipeWire planned)
  */
 
 AudioOutput* audio_output_init(const AudioFormat* format, AudioOutputConfig config) {
@@ -33,7 +33,7 @@ AudioOutput* audio_output_init(const AudioFormat* format, AudioOutputConfig conf
 
     /* ---- Dispatch to platform back-end ---- */
 #ifdef _WIN32
-    return wasapi_output_create(format, (const WasapiConfig*)config);
+    return windows_output_create(format, (const WindowsAudioConfig*)config);
 
 #elif defined(__APPLE__)
     (void)config;

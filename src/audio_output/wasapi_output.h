@@ -13,6 +13,17 @@ typedef struct {
     unsigned int buffer_duration_ms; /* Buffer duration in milliseconds (only for shared mode) */
 } WasapiConfig;
 
-AudioOutput* wasapi_output_create(const AudioFormat* format, const WasapiConfig* config);
+typedef struct WasapiOutput WasapiOutput;
+
+WasapiOutput* wasapi_output_create(const AudioFormat* format, const WasapiConfig* config);
+int wasapi_output_start(WasapiOutput* output);
+int wasapi_output_stop(WasapiOutput* output);
+int wasapi_output_pause(WasapiOutput* output);
+int wasapi_output_resume(WasapiOutput* output);
+int wasapi_output_write(WasapiOutput* output, const void* data, size_t num_samples);
+AudioState wasapi_output_get_state(WasapiOutput* output);
+int wasapi_output_get_available_frames(WasapiOutput* output);
+const char* wasapi_output_get_error(WasapiOutput* output);
+void wasapi_output_close(WasapiOutput* output);
 
 #endif /* WASAPI_OUTPUT_H */

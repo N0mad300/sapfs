@@ -13,6 +13,9 @@ A lightweight, cross-platform command-line audio player written in C. Plays WAV,
 - Windows **WASAPI** audio output:
   - Shared mode (default)
   - Exclusive mode for bit-perfect, low-latency playback
+- Windows **ASIO** audio output:
+  - Registered ASIO driver discovery
+  - Optional driver and output-channel selection
 - macOS support
 - Configurable **buffer size** (Windows shared mode only)
 - Internal **32-bit float pipeline** — all formats are decoded to `float` before output
@@ -104,6 +107,11 @@ sapfs [OPTIONS] <audio_file>
 |--------|-------------|----------|
 | `--exclusive` | Use WASAPI exclusive mode (bit-perfect) | Windows only |
 | `--buffer <ms>` | Set audio buffer size in milliseconds, 10–5000 | Windows shared mode only |
+| `--asio` | Use ASIO audio output | Windows only |
+| `--output <wasapi\|asio>` | Select the Windows output backend | Windows only |
+| `--asio-driver <name>` | Use a specific ASIO driver name | Windows only |
+| `--asio-output <n>` | Set the first ASIO output channel, zero-based | Windows only |
+| `--list-asio-drivers` | List installed ASIO drivers and exit | Windows only |
 | `--loop` | Loop playback indefinitely | All |
 | `-h`, `--help` | Show help message | All |
 
@@ -125,6 +133,12 @@ sapfs --exclusive album.flac
 
 # Loop an MP3 with a 200ms buffer
 sapfs --loop --buffer 200 track.mp3
+
+# List ASIO drivers
+sapfs --list-asio-drivers
+
+# Play through ASIO, selecting driver by name
+sapfs --asio --asio-driver "Focusrite USB ASIO" song.wav
 ```
 
 ---
@@ -140,7 +154,9 @@ main.c
 │   └── mp3_parser.c          # libmpg123 wrapper (dynamic loading)
 ├── audio_output/
 │   ├── audio_output.c        # Output abstraction (platform dispatch)
+│   ├── windows_output.c      # Windows backend selector (WASAPI / ASIO)
 │   ├── wasapi_output.c       # Windows WASAPI backend (shared + exclusive)
+│   ├── asio_output.cpp       # Windows ASIO backend
 │   ├── coreaudio_output.c    # macOS CoreAudio AudioUnit backend
 │   └── ring_buffer.c         # Thread-safe ring buffer (producer/consumer)
 └── audio_converter.c         # PCM format converters (8/16/24/32-bit ↔ float)
@@ -149,10 +165,11 @@ main.c
 ### Signal Flow
 
 ```
-File → [Decoder] → float PCM → [Ring Buffer] → [WASAPI Consumer Thread] → [Device]
+File -> [Decoder] -> float PCM -> [Ring Buffer] -> [Output Backend] -> [Device]
 ```
 
 - **Windows (WASAPI)**: A dedicated consumer thread (`_beginthreadex`) drains the ring buffer on `WaitForSingleObject`, registered under MMCSS `Pro Audio` priority.
+- **Windows (ASIO)**: The ASIO driver owns the real-time callback. The callback drains interleaved float PCM from the ring buffer, de-interleaves it into ASIO output channels, and converts to the driver's sample type.
 - **macOS (CoreAudio)**: The AudioUnit engine drives a pull-model render callback on its own real-time thread. The callback drains the ring buffer each time the engine needs a block of samples. Underruns are zero-padded to avoid noise.
 
 The ring buffer implementation is fully cross-platform, using `CRITICAL_SECTION` / `CONDITION_VARIABLE` on Windows and `pthread_mutex_t` / `pthread_cond_t` on POSIX platforms.

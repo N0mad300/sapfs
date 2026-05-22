@@ -8,7 +8,9 @@
 
 /* Platform-specific */
 #ifdef _WIN32
+    #include "audio_output/windows_output.h"
     #include "audio_output/wasapi_output.h"
+    #include "audio_output/asio_output.h"
     #include <windows.h>
     #include <conio.h>
     #define SLEEP_MS(ms) Sleep(ms)
@@ -68,6 +70,14 @@
 
 static volatile int g_running = 1;
 
+#ifdef _WIN32
+static void print_asio_driver_name(const char* driver_name, void* user_data) {
+    int* count = (int*)user_data;
+    printf("  %s\n", driver_name);
+    if (count) (*count)++;
+}
+#endif
+
 void setCursorVisible(int visible) {
 #if defined(_WIN32)
     HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -105,6 +115,11 @@ void print_usage(const char* program_name) {
 #ifdef _WIN32
     printf("  --exclusive      Use WASAPI exclusive mode (bit-perfect)\n");
     printf("  --buffer <ms>    Set buffer size in ms (shared mode only)\n");
+    printf("  --asio           Use ASIO audio output\n");
+    printf("  --output <name>  Select Windows backend: wasapi or asio\n");
+    printf("  --asio-driver <name>  Use a specific ASIO driver\n");
+    printf("  --asio-output <n>     First ASIO output channel, zero-based\n");
+    printf("  --list-asio-drivers   List installed ASIO drivers\n");
 #endif
 #ifdef __APPLE__
     printf(" --exclusive       Use macOS Core Audio hog mode (bit-perfect)\n");
@@ -156,7 +171,13 @@ void display_progress(uint32_t current_sample, uint32_t total_samples, uint32_t 
     fflush(stdout);
 }
 
-int play_audio_file(const char* filepath, int use_exclusive, unsigned int buffer_ms, int loop_mode) {
+int play_audio_file(const char* filepath,
+                    int use_exclusive,
+                    unsigned int buffer_ms,
+                    int loop_mode,
+                    int use_asio,
+                    const char* asio_driver_name,
+                    long asio_output_offset) {
     AudioDecoder* decoder = NULL;
     AudioOutput* audio = NULL;
     AudioDecoderFormat decoder_format;
@@ -187,12 +208,39 @@ int play_audio_file(const char* filepath, int use_exclusive, unsigned int buffer
 
     /* Init Audio Output */
 #ifdef _WIN32
-    WasapiConfig config;
-    config.mode = use_exclusive ? WASAPI_MODE_EXCLUSIVE : WASAPI_MODE_SHARED;
-    if (use_exclusive) printf("WASAPI exclusive mode: ENABLED\n");
-    config.buffer_duration_ms = buffer_ms > 0 ? buffer_ms : 0;
-    audio = audio_output_init(&audio_format, &config);
+    if (use_asio) {
+        AsioConfig asio_config;
+        WindowsAudioConfig windows_config;
+
+        memset(&asio_config, 0, sizeof(asio_config));
+        asio_config.driver_name = asio_driver_name;
+        asio_config.output_channel_offset = asio_output_offset;
+
+        windows_config.backend = WINDOWS_AUDIO_BACKEND_ASIO;
+        windows_config.backend_config = &asio_config;
+
+        printf("ASIO output: ENABLED\n");
+        if (asio_driver_name) printf("ASIO driver: %s\n", asio_driver_name);
+        if (asio_output_offset > 0) printf("ASIO output offset: %ld\n", asio_output_offset);
+
+        audio = audio_output_init(&audio_format, &windows_config);
+    } else {
+        WasapiConfig wasapi_config;
+        WindowsAudioConfig windows_config;
+
+        wasapi_config.mode = use_exclusive ? WASAPI_MODE_EXCLUSIVE : WASAPI_MODE_SHARED;
+        if (use_exclusive) printf("WASAPI exclusive mode: ENABLED\n");
+        wasapi_config.buffer_duration_ms = buffer_ms > 0 ? buffer_ms : 0;
+
+        windows_config.backend = WINDOWS_AUDIO_BACKEND_WASAPI;
+        windows_config.backend_config = &wasapi_config;
+
+        audio = audio_output_init(&audio_format, &windows_config);
+    }
 #elif defined(__APPLE__)
+    (void)use_asio;
+    (void)asio_driver_name;
+    (void)asio_output_offset;
     {
         CoreAudioConfig config;
         config.mode = use_exclusive ? COREAUDIO_MODE_HOG : COREAUDIO_MODE_SHARED;
@@ -201,6 +249,11 @@ int play_audio_file(const char* filepath, int use_exclusive, unsigned int buffer
         audio = audio_output_init(&audio_format, &config);
     }
 #else
+    (void)use_exclusive;
+    (void)buffer_ms;
+    (void)use_asio;
+    (void)asio_driver_name;
+    (void)asio_output_offset;
     audio = audio_output_init(&audio_format, NULL);
 #endif
 
@@ -364,6 +417,10 @@ int main(int argc, char** argv) {
     int use_exclusive = 0;
     int loop_mode = 0;
     unsigned int buffer_ms = 0;
+    int use_asio = 0;
+    int list_asio_drivers = 0;
+    const char* asio_driver_name = NULL;
+    long asio_output_offset = 0;
     
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
@@ -375,6 +432,60 @@ int main(int argc, char** argv) {
 #ifdef _WIN32
         else if (strcmp(argv[i], "--exclusive") == 0) {
             use_exclusive = 1;
+        }
+        else if (strcmp(argv[i], "--asio") == 0) {
+            use_asio = 1;
+        }
+        else if (strcmp(argv[i], "--output") == 0 || strcmp(argv[i], "--backend") == 0) {
+            if (i + 1 < argc) {
+                if (strcmp(argv[i + 1], "asio") == 0) {
+                    use_asio = 1;
+                } else if (strcmp(argv[i + 1], "wasapi") == 0) {
+                    use_asio = 0;
+                } else {
+                    fprintf(stderr, "Error: --output must be 'wasapi' or 'asio'\n");
+                    restore_terminal_input();
+                    setCursorVisible(1);
+                    return 1;
+                }
+                i++;
+            } else {
+                fprintf(stderr, "Error: --output requires a backend name\n");
+                restore_terminal_input();
+                setCursorVisible(1);
+                return 1;
+            }
+        }
+        else if (strcmp(argv[i], "--asio-driver") == 0) {
+            if (i + 1 < argc) {
+                asio_driver_name = argv[++i];
+                use_asio = 1;
+            } else {
+                fprintf(stderr, "Error: --asio-driver requires a driver name\n");
+                restore_terminal_input();
+                setCursorVisible(1);
+                return 1;
+            }
+        }
+        else if (strcmp(argv[i], "--asio-output") == 0) {
+            if (i + 1 < argc) {
+                asio_output_offset = atol(argv[++i]);
+                if (asio_output_offset < 0) {
+                    fprintf(stderr, "Error: --asio-output must be zero or greater\n");
+                    restore_terminal_input();
+                    setCursorVisible(1);
+                    return 1;
+                }
+                use_asio = 1;
+            } else {
+                fprintf(stderr, "Error: --asio-output requires a channel index\n");
+                restore_terminal_input();
+                setCursorVisible(1);
+                return 1;
+            }
+        }
+        else if (strcmp(argv[i], "--list-asio-drivers") == 0) {
+            list_asio_drivers = 1;
         }
         else if (strcmp(argv[i], "--buffer") == 0) {
             if (i + 1 < argc) {
@@ -421,6 +532,18 @@ int main(int argc, char** argv) {
             filepath = argv[i];
         }
     }
+
+#ifdef _WIN32
+    if (list_asio_drivers) {
+        int count = 0;
+        printf("Installed ASIO drivers:\n");
+        asio_output_list_drivers(print_asio_driver_name, &count);
+        if (count == 0) printf("  (none found)\n");
+        restore_terminal_input();
+        setCursorVisible(1);
+        return 0;
+    }
+#endif
     
     if (!filepath) {
         fprintf(stderr, "Error: No audio file specified\n");
@@ -429,11 +552,24 @@ int main(int argc, char** argv) {
         return 1;
     }
     
-    if (use_exclusive && buffer_ms > 0) {
+    if (use_asio) {
+        if (use_exclusive) {
+            fprintf(stderr, "Warning: --exclusive option is ignored with ASIO output\n");
+        }
+        if (buffer_ms > 0) {
+            fprintf(stderr, "Warning: --buffer option is ignored with ASIO output\n");
+        }
+    } else if (use_exclusive && buffer_ms > 0) {
         fprintf(stderr, "Warning: --buffer option is ignored in exclusive mode\n");
     }
     
-    int result = play_audio_file(filepath, use_exclusive, buffer_ms, loop_mode);
+    int result = play_audio_file(filepath,
+                                 use_exclusive,
+                                 buffer_ms,
+                                 loop_mode,
+                                 use_asio,
+                                 asio_driver_name,
+                                 asio_output_offset);
     
     setCursorVisible(1);
     

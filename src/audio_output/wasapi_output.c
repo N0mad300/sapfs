@@ -52,7 +52,7 @@ static const GUID KSDATAFORMAT_SUBTYPE_IEEE_FLOAT =
 #define SPEAKER_TOP_BACK_RIGHT          0x20000
 
 /* WASAPI-specific audio output structure */
-struct AudioOutput {
+struct WasapiOutput {
     IMMDeviceEnumerator* enumerator;
     IMMDevice*           device;
     IAudioClient*        audio_client;
@@ -81,7 +81,7 @@ struct AudioOutput {
     char error_msg[512];
 };
 
-static void set_error(AudioOutput* output, const char* msg, HRESULT hr) {
+static void set_error(WasapiOutput* output, const char* msg, HRESULT hr) {
     if (hr != S_OK) {
         snprintf(output->error_msg, sizeof(output->error_msg), "%s (HRESULT: 0x%08lX)", msg, hr);
     } else {
@@ -140,7 +140,7 @@ static void build_waveformat(const AudioFormat* format, int bits_per_sample, int
 }
 
 static unsigned int __stdcall wasapi_consumer_thread(void* arg) {
-    AudioOutput* output = (AudioOutput*)arg;
+    WasapiOutput* output = (WasapiOutput*)arg;
     HRESULT hr;
     BYTE* device_buffer;
     HANDLE wait_handles[2] = { output->stop_event, output->buffer_ready_event };
@@ -184,11 +184,9 @@ static unsigned int __stdcall wasapi_consumer_thread(void* arg) {
         }
 
         size_t float_bytes_read = ring_buffer_read(output->ring_buffer, output->conv_buffer, float_bytes_needed);
-        size_t frames_read = float_bytes_read / float_block_align;
 
         if (float_bytes_read < float_bytes_needed) {
             memset((uint8_t*)output->conv_buffer + float_bytes_read, 0, float_bytes_needed - float_bytes_read);
-            frames_read = frames_needed;
         }
 
         size_t total_samples = frames_needed * output->format.num_channels;
@@ -228,6 +226,7 @@ static unsigned int __stdcall wasapi_consumer_thread(void* arg) {
 static int negotiate_exclusive_format(IAudioClient* client, const AudioFormat* format, REFERENCE_TIME period, WAVEFORMATEXTENSIBLE* out_wfex) {
     static const int depths[] = { 32, 24, 16 };
     HRESULT hr;
+    (void)period;
 
     for (int i = 0; i < 3; ++i) {
         int bps = depths[i];
@@ -246,10 +245,10 @@ static int negotiate_exclusive_format(IAudioClient* client, const AudioFormat* f
     return 0;
 }
 
-AudioOutput* wasapi_output_create(const AudioFormat* format, const WasapiConfig* config) {
+WasapiOutput* wasapi_output_create(const AudioFormat* format, const WasapiConfig* config) {
     if (!format) return NULL;
 
-    AudioOutput* output = (AudioOutput*)calloc(1, sizeof(AudioOutput));
+    WasapiOutput* output = (WasapiOutput*)calloc(1, sizeof(WasapiOutput));
     if (!output) return NULL;
     
     memcpy(&output->format, format, sizeof(AudioFormat));
@@ -367,7 +366,7 @@ AudioOutput* wasapi_output_create(const AudioFormat* format, const WasapiConfig*
             AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
             buffer_duration,
             0,
-            &output->wave_format,
+            (WAVEFORMATEX*)&output->wave_format,
             NULL
         );
     }
@@ -394,11 +393,11 @@ AudioOutput* wasapi_output_create(const AudioFormat* format, const WasapiConfig*
     return output;
 
 error_cleanup:
-    audio_output_close(output);
+    wasapi_output_close(output);
     return NULL;
 }
 
-int audio_output_start(AudioOutput* output) {
+int wasapi_output_start(WasapiOutput* output) {
     if (!output || output->state == AUDIO_STATE_PLAYING) return 0;
 
     output->stop_event = CreateEvent(NULL, TRUE, FALSE, NULL);
@@ -437,7 +436,7 @@ int audio_output_start(AudioOutput* output) {
     return 0;
 }
 
-int audio_output_stop(AudioOutput* output) {
+int wasapi_output_stop(WasapiOutput* output) {
     if (!output || output->state == AUDIO_STATE_STOPPED) return 0;
     
     IAudioClient_Stop(output->audio_client);
@@ -458,7 +457,7 @@ int audio_output_stop(AudioOutput* output) {
     return 0;
 }
 
-int audio_output_pause(AudioOutput* output) {
+int wasapi_output_pause(WasapiOutput* output) {
     if (!output || output->state != AUDIO_STATE_PLAYING) return -1;
 
     HRESULT hr = IAudioClient_Stop(output->audio_client);
@@ -468,7 +467,7 @@ int audio_output_pause(AudioOutput* output) {
     return 0;
 }
 
-int audio_output_resume(AudioOutput* output) {
+int wasapi_output_resume(WasapiOutput* output) {
     if (!output || output->state != AUDIO_STATE_PAUSED) return -1;
 
     HRESULT hr = IAudioClient_Start(output->audio_client);
@@ -478,7 +477,7 @@ int audio_output_resume(AudioOutput* output) {
     return 0;
 }
 
-int audio_output_write(AudioOutput* output, const void* data, size_t num_samples) {
+int wasapi_output_write(WasapiOutput* output, const void* data, size_t num_samples) {
     if (!output || !data) return -1;
 
     size_t bytes_to_write = num_samples * output->format.num_channels * sizeof(float);
@@ -487,12 +486,12 @@ int audio_output_write(AudioOutput* output, const void* data, size_t num_samples
     return (int)(written / (output->format.num_channels * sizeof(float)));
 }
 
-AudioState audio_output_get_state(AudioOutput* output) {
+AudioState wasapi_output_get_state(WasapiOutput* output) {
     if (!output) return AUDIO_STATE_STOPPED;
     return output->state;
 }
 
-int audio_output_get_available_frames(AudioOutput* output) {
+int wasapi_output_get_available_frames(WasapiOutput* output) {
     if (!output || !output->ring_buffer) return -1;
     
     size_t capacity = ring_buffer_get_capacity(output->ring_buffer);
@@ -503,14 +502,14 @@ int audio_output_get_available_frames(AudioOutput* output) {
     return (int)(bytes_free / float_frame_bytes);
 }
 
-const char* audio_output_get_error(AudioOutput* output) {
+const char* wasapi_output_get_error(WasapiOutput* output) {
     if (!output) return "Invalid audio output handle";
     return output->error_msg[0] ? output->error_msg : NULL;
 }
 
-void audio_output_close(AudioOutput* output) {
+void wasapi_output_close(WasapiOutput* output) {
     if (!output) return;
-    audio_output_stop(output);
+    wasapi_output_stop(output);
     
     if (output->render_client) IAudioRenderClient_Release(output->render_client);
     if (output->audio_client) IAudioClient_Release(output->audio_client);
