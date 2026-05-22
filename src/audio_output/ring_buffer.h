@@ -4,10 +4,6 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 typedef struct RingBuffer RingBuffer;
 
 RingBuffer* ring_buffer_create(size_t size);
@@ -17,9 +13,5 @@ size_t ring_buffer_read(RingBuffer* rb, void* data, size_t size);
 size_t ring_buffer_available(RingBuffer* rb);
 size_t ring_buffer_get_capacity(RingBuffer* rb);
 void ring_buffer_cancel(RingBuffer* rb);
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif

@@ -4,10 +4,6 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 /* --- IMPORTERS (Raw -> Float) --- */
 
 /* 8-bit Unsigned (0 to 255) -> Float (-1.0 to 1.0) */
@@ -38,9 +34,5 @@ void float_to_pcm24(const float* src, uint8_t* dst, size_t num_samples);
 
 /* Float -> 32-bit Signed */
 void float_to_pcm32(const float* src, int32_t* dst, size_t num_samples);
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif

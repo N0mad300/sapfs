@@ -4,10 +4,6 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 typedef struct AudioOutput AudioOutput;
 
 typedef struct {
@@ -40,9 +36,5 @@ AudioState audio_output_get_state(AudioOutput* output);
 int audio_output_get_available_frames(AudioOutput* output);
 const char* audio_output_get_error(AudioOutput* output);
 void audio_output_close(AudioOutput* output);
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* AUDIO_OUTPUT_H */

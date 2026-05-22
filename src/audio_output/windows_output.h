@@ -5,10 +5,6 @@
 
 #ifdef _WIN32
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 typedef enum {
     WINDOWS_AUDIO_BACKEND_WASAPI = 0,
     WINDOWS_AUDIO_BACKEND_ASIO   = 1
@@ -20,10 +16,6 @@ typedef struct {
 } WindowsAudioConfig;
 
 AudioOutput* windows_output_create(const AudioFormat* format, const WindowsAudioConfig* config);
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* _WIN32 */
 

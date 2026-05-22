@@ -5,10 +5,6 @@
 
 #ifdef _WIN32
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 typedef struct AsioOutput AsioOutput;
 
 typedef struct {
@@ -31,10 +27,6 @@ const char* asio_output_get_error(AsioOutput* output);
 const char* asio_output_get_last_error(void);
 void asio_output_close(AsioOutput* output);
 int asio_output_list_drivers(AsioDriverListCallback callback, void* user_data);
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* _WIN32 */
 
