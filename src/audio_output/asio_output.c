@@ -127,28 +127,52 @@ typedef struct ASIOClockSource {
 } ASIOClockSource;
 #pragma pack(pop)
 
-struct IASIO : public IUnknown {
-    virtual ASIOBool init(void* sysHandle) = 0;
-    virtual void getDriverName(char* name) = 0;
-    virtual long getDriverVersion() = 0;
-    virtual void getErrorMessage(char* string) = 0;
-    virtual ASIOError start() = 0;
-    virtual ASIOError stop() = 0;
-    virtual ASIOError getChannels(long* numInputChannels, long* numOutputChannels) = 0;
-    virtual ASIOError getLatencies(long* inputLatency, long* outputLatency) = 0;
-    virtual ASIOError getBufferSize(long* minSize, long* maxSize, long* preferredSize, long* granularity) = 0;
-    virtual ASIOError canSampleRate(ASIOSampleRate sampleRate) = 0;
-    virtual ASIOError getSampleRate(ASIOSampleRate* sampleRate) = 0;
-    virtual ASIOError setSampleRate(ASIOSampleRate sampleRate) = 0;
-    virtual ASIOError getClockSources(ASIOClockSource* clocks, long* numSources) = 0;
-    virtual ASIOError setClockSource(long reference) = 0;
-    virtual ASIOError getSamplePosition(ASIOSamples* sPos, ASIOTimeStamp* tStamp) = 0;
-    virtual ASIOError getChannelInfo(ASIOChannelInfo* info) = 0;
-    virtual ASIOError createBuffers(ASIOBufferInfo* bufferInfos, long numChannels, long bufferSize, ASIOCallbacks* callbacks) = 0;
-    virtual ASIOError disposeBuffers() = 0;
-    virtual ASIOError controlPanel() = 0;
-    virtual ASIOError future(long selector, void* opt) = 0;
-    virtual ASIOError outputReady() = 0;
+typedef struct IASIO IASIO;
+
+/*
+ * ASIO drivers expose C++ virtual methods. On Win32 those methods are
+ * thiscall: `this` in ECX, real arguments on the stack. A fastcall pointer
+ * with a dummy EDX argument lets plain C make the same call shape.
+ */
+#if defined(_M_IX86) || defined(__i386__)
+    #define ASIO_METHOD_TYPE(ret, name, args) ret (__fastcall *name) args
+    #define ASIO_METHOD_ARGS IASIO* self, void* unused
+    #define ASIO_METHOD_PASS(self) (self), NULL
+#else
+    #define ASIO_METHOD_TYPE(ret, name, args) ret (*name) args
+    #define ASIO_METHOD_ARGS IASIO* self
+    #define ASIO_METHOD_PASS(self) (self)
+#endif
+
+typedef struct IASIOVtbl {
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(IASIO* self, REFIID riid, void** ppv);
+    ULONG (STDMETHODCALLTYPE *AddRef)(IASIO* self);
+    ULONG (STDMETHODCALLTYPE *Release)(IASIO* self);
+    ASIO_METHOD_TYPE(ASIOBool, init, (ASIO_METHOD_ARGS, void* sysHandle));
+    ASIO_METHOD_TYPE(void, getDriverName, (ASIO_METHOD_ARGS, char* name));
+    ASIO_METHOD_TYPE(long, getDriverVersion, (ASIO_METHOD_ARGS));
+    ASIO_METHOD_TYPE(void, getErrorMessage, (ASIO_METHOD_ARGS, char* string));
+    ASIO_METHOD_TYPE(ASIOError, start, (ASIO_METHOD_ARGS));
+    ASIO_METHOD_TYPE(ASIOError, stop, (ASIO_METHOD_ARGS));
+    ASIO_METHOD_TYPE(ASIOError, getChannels, (ASIO_METHOD_ARGS, long* numInputChannels, long* numOutputChannels));
+    ASIO_METHOD_TYPE(ASIOError, getLatencies, (ASIO_METHOD_ARGS, long* inputLatency, long* outputLatency));
+    ASIO_METHOD_TYPE(ASIOError, getBufferSize, (ASIO_METHOD_ARGS, long* minSize, long* maxSize, long* preferredSize, long* granularity));
+    ASIO_METHOD_TYPE(ASIOError, canSampleRate, (ASIO_METHOD_ARGS, ASIOSampleRate sampleRate));
+    ASIO_METHOD_TYPE(ASIOError, getSampleRate, (ASIO_METHOD_ARGS, ASIOSampleRate* sampleRate));
+    ASIO_METHOD_TYPE(ASIOError, setSampleRate, (ASIO_METHOD_ARGS, ASIOSampleRate sampleRate));
+    ASIO_METHOD_TYPE(ASIOError, getClockSources, (ASIO_METHOD_ARGS, ASIOClockSource* clocks, long* numSources));
+    ASIO_METHOD_TYPE(ASIOError, setClockSource, (ASIO_METHOD_ARGS, long reference));
+    ASIO_METHOD_TYPE(ASIOError, getSamplePosition, (ASIO_METHOD_ARGS, ASIOSamples* sPos, ASIOTimeStamp* tStamp));
+    ASIO_METHOD_TYPE(ASIOError, getChannelInfo, (ASIO_METHOD_ARGS, ASIOChannelInfo* info));
+    ASIO_METHOD_TYPE(ASIOError, createBuffers, (ASIO_METHOD_ARGS, ASIOBufferInfo* bufferInfos, long numChannels, long bufferSize, ASIOCallbacks* callbacks));
+    ASIO_METHOD_TYPE(ASIOError, disposeBuffers, (ASIO_METHOD_ARGS));
+    ASIO_METHOD_TYPE(ASIOError, controlPanel, (ASIO_METHOD_ARGS));
+    ASIO_METHOD_TYPE(ASIOError, future, (ASIO_METHOD_ARGS, long selector, void* opt));
+    ASIO_METHOD_TYPE(ASIOError, outputReady, (ASIO_METHOD_ARGS));
+} IASIOVtbl;
+
+struct IASIO {
+    const IASIOVtbl* lpVtbl;
 };
 
 struct AsioOutput {
@@ -220,7 +244,7 @@ static void set_driver_error(AsioOutput* output, const char* action, ASIOError e
     char driver_msg[128] = {0};
 
     if (output && output->driver) {
-        output->driver->getErrorMessage(driver_msg);
+        output->driver->lpVtbl->getErrorMessage(ASIO_METHOD_PASS(output->driver), driver_msg);
     }
 
     if (driver_msg[0]) {
@@ -509,7 +533,7 @@ static void asio_buffer_switch(long double_buffer_index, ASIOBool direct_process
     render_asio_buffer(output, double_buffer_index);
 
     if (output->supports_output_ready && output->driver) {
-        output->driver->outputReady();
+        output->driver->lpVtbl->outputReady(ASIO_METHOD_PASS(output->driver));
     }
 }
 
@@ -595,16 +619,16 @@ static int configure_sample_rate(AsioOutput* output, uint32_t sample_rate) {
     ASIOSampleRate current = 0.0;
     ASIOError err;
 
-    err = output->driver->canSampleRate(desired);
+    err = output->driver->lpVtbl->canSampleRate(ASIO_METHOD_PASS(output->driver), desired);
     if (err != ASE_OK) {
         set_driver_error(output, "ASIO canSampleRate", err);
         return -1;
     }
 
-    err = output->driver->getSampleRate(&current);
+    err = output->driver->lpVtbl->getSampleRate(ASIO_METHOD_PASS(output->driver), &current);
     if (err == ASE_OK && fabs(current - desired) < 0.5) return 0;
 
-    err = output->driver->setSampleRate(desired);
+    err = output->driver->lpVtbl->setSampleRate(ASIO_METHOD_PASS(output->driver), desired);
     if (err != ASE_OK) {
         set_driver_error(output, "ASIO setSampleRate", err);
         return -1;
@@ -666,14 +690,14 @@ AsioOutput* asio_output_create(const AudioFormat* format, const AsioConfig* conf
         return NULL;
     }
 
-    hr = CoCreateInstance(output->clsid, NULL, CLSCTX_INPROC_SERVER, output->clsid, (void**)&output->driver);
+    hr = CoCreateInstance(&output->clsid, NULL, CLSCTX_INPROC_SERVER, &output->clsid, (void**)&output->driver);
     if (FAILED(hr) || !output->driver) {
         set_error(output, "Failed to instantiate ASIO driver %s (HRESULT 0x%08lX)", output->driver_name, (unsigned long)hr);
         asio_output_close(output);
         return NULL;
     }
 
-    if (output->driver->init(GetConsoleWindow()) != ASIOTrue) {
+    if (output->driver->lpVtbl->init(ASIO_METHOD_PASS(output->driver), GetConsoleWindow()) != ASIOTrue) {
         set_driver_error(output, "ASIO init", ASE_HWMalfunction);
         asio_output_close(output);
         return NULL;
@@ -681,13 +705,13 @@ AsioOutput* asio_output_create(const AudioFormat* format, const AsioConfig* conf
 
     {
         char runtime_name[32] = {0};
-        output->driver->getDriverName(runtime_name);
+        output->driver->lpVtbl->getDriverName(ASIO_METHOD_PASS(output->driver), runtime_name);
         if (runtime_name[0]) {
             snprintf(output->driver_name, sizeof(output->driver_name), "%s", runtime_name);
         }
     }
 
-    err = output->driver->getChannels(&output->input_channels, &output->output_channels);
+    err = output->driver->lpVtbl->getChannels(ASIO_METHOD_PASS(output->driver), &output->input_channels, &output->output_channels);
     if (err != ASE_OK) {
         set_driver_error(output, "ASIO getChannels", err);
         asio_output_close(output);
@@ -710,10 +734,11 @@ AsioOutput* asio_output_create(const AudioFormat* format, const AsioConfig* conf
         return NULL;
     }
 
-    err = output->driver->getBufferSize(&output->min_buffer_size,
-                                        &output->max_buffer_size,
-                                        &output->preferred_buffer_size,
-                                        &output->granularity);
+    err = output->driver->lpVtbl->getBufferSize(ASIO_METHOD_PASS(output->driver),
+                                                &output->min_buffer_size,
+                                                &output->max_buffer_size,
+                                                &output->preferred_buffer_size,
+                                                &output->granularity);
     if (err != ASE_OK) {
         set_driver_error(output, "ASIO getBufferSize", err);
         asio_output_close(output);
@@ -742,7 +767,7 @@ AsioOutput* asio_output_create(const AudioFormat* format, const AsioConfig* conf
         output->channel_infos[ch].channel = output->output_channel_offset + ch;
         output->channel_infos[ch].isInput = ASIOFalse;
 
-        err = output->driver->getChannelInfo(&output->channel_infos[ch]);
+        err = output->driver->lpVtbl->getChannelInfo(ASIO_METHOD_PASS(output->driver), &output->channel_infos[ch]);
         if (err != ASE_OK) {
             set_driver_error(output, "ASIO getChannelInfo", err);
             asio_output_close(output);
@@ -769,10 +794,11 @@ AsioOutput* asio_output_create(const AudioFormat* format, const AsioConfig* conf
     }
 
     g_active_output = output;
-    err = output->driver->createBuffers(output->buffer_infos,
-                                        format->num_channels,
-                                        output->buffer_size,
-                                        &output->callbacks);
+    err = output->driver->lpVtbl->createBuffers(ASIO_METHOD_PASS(output->driver),
+                                                output->buffer_infos,
+                                                format->num_channels,
+                                                output->buffer_size,
+                                                &output->callbacks);
     if (err != ASE_OK) {
         g_active_output = NULL;
         set_driver_error(output, "ASIO createBuffers", err);
@@ -784,13 +810,13 @@ AsioOutput* asio_output_create(const AudioFormat* format, const AsioConfig* conf
     clear_asio_buffer(output, 0);
     clear_asio_buffer(output, 1);
 
-    err = output->driver->getLatencies(&output->input_latency, &output->output_latency);
+    err = output->driver->lpVtbl->getLatencies(ASIO_METHOD_PASS(output->driver), &output->input_latency, &output->output_latency);
     if (err != ASE_OK) {
         output->input_latency = 0;
         output->output_latency = output->buffer_size;
     }
 
-    err = output->driver->outputReady();
+    err = output->driver->lpVtbl->outputReady(ASIO_METHOD_PASS(output->driver));
     output->supports_output_ready = (err == ASE_OK || err == ASE_SUCCESS);
 
     g_last_error[0] = '\0';
@@ -806,7 +832,7 @@ int asio_output_start(AsioOutput* output) {
     clear_asio_buffer(output, 0);
     clear_asio_buffer(output, 1);
 
-    err = output->driver->start();
+    err = output->driver->lpVtbl->start(ASIO_METHOD_PASS(output->driver));
     if (err != ASE_OK) {
         set_driver_error(output, "ASIO start", err);
         return -1;
@@ -823,7 +849,7 @@ int asio_output_stop(AsioOutput* output) {
     if (output->state == AUDIO_STATE_STOPPED) return 0;
 
     if (output->state == AUDIO_STATE_PLAYING) {
-        err = output->driver->stop();
+        err = output->driver->lpVtbl->stop(ASIO_METHOD_PASS(output->driver));
     }
 
     if (output->ring_buffer) ring_buffer_cancel(output->ring_buffer);
@@ -842,7 +868,7 @@ int asio_output_pause(AsioOutput* output) {
 
     if (!output || output->state != AUDIO_STATE_PLAYING) return -1;
 
-    err = output->driver->stop();
+    err = output->driver->lpVtbl->stop(ASIO_METHOD_PASS(output->driver));
     if (err != ASE_OK) {
         set_driver_error(output, "ASIO pause", err);
         return -1;
@@ -857,7 +883,7 @@ int asio_output_resume(AsioOutput* output) {
 
     if (!output || output->state != AUDIO_STATE_PAUSED) return -1;
 
-    err = output->driver->start();
+    err = output->driver->lpVtbl->start(ASIO_METHOD_PASS(output->driver));
     if (err != ASE_OK) {
         set_driver_error(output, "ASIO resume", err);
         return -1;
@@ -921,12 +947,12 @@ void asio_output_close(AsioOutput* output) {
     }
 
     if (output->driver && output->buffers_created) {
-        output->driver->disposeBuffers();
+        output->driver->lpVtbl->disposeBuffers(ASIO_METHOD_PASS(output->driver));
         output->buffers_created = 0;
     }
 
     if (output->driver) {
-        output->driver->Release();
+        output->driver->lpVtbl->Release(output->driver);
         output->driver = NULL;
     }
 

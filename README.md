@@ -156,7 +156,7 @@ main.c
 │   ├── audio_output.c        # Output abstraction (platform dispatch)
 │   ├── windows_output.c      # Windows backend selector (WASAPI / ASIO)
 │   ├── wasapi_output.c       # Windows WASAPI backend (shared + exclusive)
-│   ├── asio_output.cpp       # Windows ASIO backend
+│   ├── asio_output.c         # Windows ASIO backend
 │   ├── coreaudio_output.c    # macOS CoreAudio AudioUnit backend
 │   └── ring_buffer.c         # Thread-safe ring buffer (producer/consumer)
 └── audio_converter.c         # PCM format converters (8/16/24/32-bit ↔ float)

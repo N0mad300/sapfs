@@ -14,7 +14,7 @@ set SRC= ^
     src\audio_output\audio_output.c ^
     src\audio_output\windows_output.c ^
     src\audio_output\wasapi_output.c ^
-    src\audio_output\asio_output.cpp ^
+    src\audio_output\asio_output.c ^
     src\audio_output\ring_buffer.c ^
     src\audio_converter.c
 
