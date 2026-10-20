@@ -609,6 +609,11 @@ const char* audio_output_get_error(AudioOutput* output) {
     return output->error_msg[0] ? output->error_msg : NULL;
 }
 
+int audio_output_get_queued_frames(AudioOutput* output) {
+    if (!output || !output->ring_buffer) return -1;
+    return (int)(ring_buffer_available(output->ring_buffer) / output->bytes_per_frame);
+}
+
 void audio_output_close(AudioOutput* output) {
     if (!output) return;
 

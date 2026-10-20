@@ -5,6 +5,7 @@
 #include <string.h>
 #include <signal.h>
 #include <time.h>
+#include <errno.h>
 
 /* Platform-specific */
 #ifdef _WIN32
@@ -27,6 +28,9 @@
 #else
 #ifdef __APPLE__
     #include "audio_output/coreaudio_output.h"
+#elif defined(__linux__)
+    #include "audio_output/linux_output.h"
+    #include "audio_output/alsa_output.h"
 #endif
     #include <unistd.h>
     #include <termios.h>
@@ -69,6 +73,16 @@
 #endif
 
 static volatile int g_running = 1;
+
+static uint64_t monotonic_ms(void) {
+#ifdef _WIN32
+    return (uint64_t)GetTickCount64();
+#else
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)now.tv_sec * 1000 + (uint64_t)now.tv_nsec / 1000000;
+#endif
+}
 
 #ifdef _WIN32
 static void print_asio_driver_name(const char* driver_name, void* user_data) {
@@ -124,6 +138,13 @@ void print_usage(const char* program_name) {
 #ifdef __APPLE__
     printf(" --exclusive       Use macOS Core Audio hog mode (bit-perfect)\n");
 #endif
+#ifdef __linux__
+    printf("  --output <name>  Select Linux backend: alsa (default)\n");
+    printf("  --device <pcm>   ALSA device (default: hw:0,0)\n");
+    printf("  --exclusive      Direct ALSA hardware, lossless playback (default)\n");
+    printf("  --shared         Allow ALSA plugins (default device: default)\n");
+    printf("  --buffer <ms>    ALSA hardware buffer duration, 10-5000 (default: 100)\n");
+#endif
     printf("  --loop           Loop playback indefinitely\n");
     printf("  -h, --help       Show this help message\n");
     printf("\nControls:\n");
@@ -143,6 +164,7 @@ void decoder_format_to_audio_format(const AudioDecoderFormat* dec_fmt, AudioForm
     audio_fmt->block_align = dec_fmt->block_align;
     audio_fmt->valid_bits_per_sample = dec_fmt->valid_bits_per_sample;
     audio_fmt->channel_mask = dec_fmt->channel_mask;
+    audio_fmt->is_float = dec_fmt->is_float;
 }
 
 void display_progress(uint32_t current_sample, uint32_t total_samples, uint32_t sample_rate, int paused) {
@@ -177,7 +199,8 @@ int play_audio_file(const char* filepath,
                     int loop_mode,
                     int use_asio,
                     const char* asio_driver_name,
-                    long asio_output_offset) {
+                    long asio_output_offset,
+                    const char* alsa_device) {
     AudioDecoder* decoder = NULL;
     AudioOutput* audio = NULL;
     AudioDecoderFormat decoder_format;
@@ -188,7 +211,12 @@ int play_audio_file(const char* filepath,
     size_t buffer_frames = 0;
     
     printf("Opening file: %s\n", filepath);
+#ifdef __linux__
+    decoder = audio_decoder_open_native(filepath);
+#else
+    (void)alsa_device;
     decoder = audio_decoder_open(filepath);
+#endif
     if (!decoder) {
         fprintf(stderr, "Error: Failed to open audio file\n");
         return -1;
@@ -238,6 +266,7 @@ int play_audio_file(const char* filepath,
         audio = audio_output_init(&audio_format, &windows_config);
     }
 #elif defined(__APPLE__)
+    (void)buffer_ms;
     (void)use_asio;
     (void)asio_driver_name;
     (void)asio_output_offset;
@@ -247,6 +276,22 @@ int play_audio_file(const char* filepath,
         if (use_exclusive)
             printf("CoreAudio hog mode: ENABLED\n");
         audio = audio_output_init(&audio_format, &config);
+    }
+#elif defined(__linux__)
+    (void)use_asio;
+    (void)asio_driver_name;
+    (void)asio_output_offset;
+    {
+        AlsaConfig alsa_config = {0};
+        LinuxAudioConfig linux_config;
+        alsa_config.mode = use_exclusive ? ALSA_MODE_EXCLUSIVE : ALSA_MODE_SHARED;
+        alsa_config.device = alsa_device;
+        alsa_config.buffer_duration_ms = buffer_ms;
+        linux_config.backend = LINUX_AUDIO_BACKEND_ALSA;
+        linux_config.backend_config = &alsa_config;
+        printf("ALSA %s output: %s\n", use_exclusive ? "exclusive" : "plugin",
+               alsa_device ? alsa_device : use_exclusive ? "hw:0,0" : "default");
+        audio = audio_output_init(&audio_format, &linux_config);
     }
 #else
     (void)use_exclusive;
@@ -276,36 +321,39 @@ int play_audio_file(const char* filepath,
     printf("\n");
     
     size_t samples_read = 0;
-    clock_t last_update = 0;
+    size_t pending_offset = 0;
+    uint64_t last_update = 0;
     int is_draining = 0;
     int is_paused = 0;
 
-    uint32_t max_buffer_frames = decoder_format.sample_rate * 2;
+    int playback_failed = 0;
+#ifdef __linux__
+    const int drain_threshold = 0;
+#else
+    const int drain_threshold = 1000;
+#endif
     
     while (g_running) {
         int key = check_keypress();
         if (key == 'p' || key == 'P' || key == ' ') {
-            is_paused = !is_paused;
-            
-            if (is_paused) {
-                audio_output_pause(audio);
-                last_update = 0; 
-            } else {
-                audio_output_resume(audio);
+            int status = is_paused ? audio_output_resume(audio) : audio_output_pause(audio);
+            if (status == 0) {
+                is_paused = !is_paused;
                 last_update = 0;
+            } else {
+                const char* err = audio_output_get_error(audio);
+                fprintf(stderr, "\nError changing playback state: %s\n", err ? err : "unknown");
             }
         }
 
         if (is_paused) {
-            clock_t now = clock();
-            if ((double)(now - last_update) * 1000.0 / CLOCKS_PER_SEC >= 200.0) {
+            uint64_t now = monotonic_ms();
+            if (now - last_update >= 200) {
 
                 uint32_t decoder_pos = audio_decoder_tell(decoder);
-                int free_frames = audio_output_get_available_frames(audio);
-                uint32_t queued_frames = 0;
-                if (free_frames >= 0 && (uint32_t)free_frames <= max_buffer_frames) {
-                    queued_frames = max_buffer_frames - (uint32_t)free_frames;
-                }
+                int queued = audio_output_get_queued_frames(audio);
+                uint32_t queued_frames = (queued > 0 ? (uint32_t)queued : 0)
+                                       + (uint32_t)(samples_read - pending_offset);
                 
                 uint32_t actual_pos = (decoder_pos > queued_frames) ? decoder_pos - queued_frames : 0;
                 display_progress(actual_pos, decoder_format.total_samples, decoder_format.sample_rate, 1);
@@ -315,26 +363,45 @@ int play_audio_file(const char* filepath,
             continue; /* Skip reading/writing */
         }
 
-        if (!is_draining) {
+        if (!is_draining && pending_offset == samples_read) {
             samples_read = audio_decoder_read_samples(decoder, buffer, buffer_frames);
+            pending_offset = 0;
             
             if (samples_read == (size_t)-1) {
                 const char* err = audio_decoder_get_error(decoder);
                 fprintf(stderr, "\nError reading samples: %s\n", err ? err : "unknown");
+                playback_failed = 1;
                 break;
             }
             
             if (samples_read == 0) {
                 is_draining = 1;
-            } else {
-                if (audio_output_write(audio, buffer, samples_read) < 0) break;
             }
         }
 
+        if (pending_offset < samples_read) {
+            int written = audio_output_write(audio,
+                buffer + pending_offset * decoder_format.block_align, samples_read - pending_offset);
+            if (written < 0) {
+                const char* err = audio_output_get_error(audio);
+                fprintf(stderr, "\nError writing audio: %s\n", err ? err : "unknown");
+                playback_failed = 1;
+                break;
+            }
+            pending_offset += (size_t)written;
+            if (written == 0) SLEEP_MS(5);
+        }
+
         if (is_draining) {
-            int free_frames = audio_output_get_available_frames(audio);
+            int queued = audio_output_get_queued_frames(audio);
+            if (queued < 0) {
+                const char* err = audio_output_get_error(audio);
+                fprintf(stderr, "\nError querying queued audio: %s\n", err ? err : "unknown");
+                playback_failed = 1;
+                break;
+            }
             
-            if (free_frames >= 0 && (uint32_t)free_frames >= (max_buffer_frames - 1000)) {
+            if (queued <= drain_threshold) {
                 if (loop_mode && g_running) {
                     /* LOOP: Seek to start and reset draining flag */
                     if (audio_decoder_seek(decoder, 0) == 0) {
@@ -343,6 +410,7 @@ int play_audio_file(const char* filepath,
                         continue;
                     } else {
                         fprintf(stderr, "\nError: Seek failed during loop.\n");
+                        playback_failed = 1;
                         break;
                     }
                 } else {
@@ -357,15 +425,13 @@ int play_audio_file(const char* filepath,
             SLEEP_MS(20);
         }
 
-        clock_t now = clock();
-        if ((double)(now - last_update) * 1000.0 / CLOCKS_PER_SEC >= 100.0) {
+        uint64_t now = monotonic_ms();
+        if (now - last_update >= 100) {
             uint32_t decoder_pos = audio_decoder_tell(decoder);
 
-            int free_frames = audio_output_get_available_frames(audio);
-            uint32_t queued_frames = 0;
-            if (free_frames >= 0 && (uint32_t)free_frames <= max_buffer_frames) {
-                queued_frames = max_buffer_frames - (uint32_t)free_frames;
-            }
+            int queued = audio_output_get_queued_frames(audio);
+            uint32_t queued_frames = (queued > 0 ? (uint32_t)queued : 0)
+                                   + (uint32_t)(samples_read - pending_offset);
 
             uint32_t actual_pos = 0;
             if (is_draining) {
@@ -382,7 +448,7 @@ int play_audio_file(const char* filepath,
     }
     
     printf("\n");
-    result = 0;
+    result = playback_failed ? -1 : 0;
     
 cleanup:
     if (audio) {
@@ -414,13 +480,20 @@ int main(int argc, char** argv) {
     
     /* Parse command-line arguments */
     const char* filepath = NULL;
+#ifdef __linux__
+    int use_exclusive = 1;
+#else
     int use_exclusive = 0;
+#endif
     int loop_mode = 0;
     unsigned int buffer_ms = 0;
     int use_asio = 0;
+#ifdef _WIN32
     int list_asio_drivers = 0;
+#endif
     const char* asio_driver_name = NULL;
     long asio_output_offset = 0;
+    const char* alsa_device = NULL;
     
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
@@ -511,6 +584,44 @@ int main(int argc, char** argv) {
         else if (strcmp(argv[i], "--exclusive") == 0) {
             use_exclusive = 1;
         }
+#elif defined(__linux__)
+        else if (strcmp(argv[i], "--exclusive") == 0) {
+            use_exclusive = 1;
+        }
+        else if (strcmp(argv[i], "--shared") == 0) {
+            use_exclusive = 0;
+        }
+        else if (strcmp(argv[i], "--device") == 0) {
+            if (i + 1 >= argc || argv[i + 1][0] == '-' || !argv[i + 1][0]) {
+                fprintf(stderr, "Error: --device requires an ALSA PCM name\n");
+                restore_terminal_input();
+                setCursorVisible(1);
+                return 1;
+            }
+            alsa_device = argv[++i];
+        }
+        else if (strcmp(argv[i], "--output") == 0 || strcmp(argv[i], "--backend") == 0) {
+            if (i + 1 >= argc || strcmp(argv[i + 1], "alsa") != 0) {
+                fprintf(stderr, "Error: --output must be 'alsa'\n");
+                restore_terminal_input();
+                setCursorVisible(1);
+                return 1;
+            }
+            ++i;
+        }
+        else if (strcmp(argv[i], "--buffer") == 0) {
+            char* end = NULL;
+            unsigned long value = 0;
+            errno = 0;
+            if (i + 1 < argc) value = strtoul(argv[++i], &end, 10);
+            if (!end || end == argv[i] || *end || errno || value < 10 || value > 5000) {
+                fprintf(stderr, "Error: --buffer requires an integer between 10 and 5000 ms\n");
+                restore_terminal_input();
+                setCursorVisible(1);
+                return 1;
+            }
+            buffer_ms = (unsigned int)value;
+        }
 #endif
         else if (strcmp(argv[i], "--loop") == 0) {
             loop_mode = 1;
@@ -552,6 +663,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     
+#ifdef _WIN32
     if (use_asio) {
         if (use_exclusive) {
             fprintf(stderr, "Warning: --exclusive option is ignored with ASIO output\n");
@@ -562,6 +674,7 @@ int main(int argc, char** argv) {
     } else if (use_exclusive && buffer_ms > 0) {
         fprintf(stderr, "Warning: --buffer option is ignored in exclusive mode\n");
     }
+#endif
     
     int result = play_audio_file(filepath,
                                  use_exclusive,
@@ -569,7 +682,8 @@ int main(int argc, char** argv) {
                                  loop_mode,
                                  use_asio,
                                  asio_driver_name,
-                                 asio_output_offset);
+                                 asio_output_offset,
+                                 alsa_device);
     
     setCursorVisible(1);
     

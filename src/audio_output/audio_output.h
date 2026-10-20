@@ -34,6 +34,8 @@ int audio_output_resume(AudioOutput* output);
 int audio_output_write(AudioOutput* output, const void* data, size_t num_samples);
 AudioState audio_output_get_state(AudioOutput* output);
 int audio_output_get_available_frames(AudioOutput* output);
+/* Frames still queued for playback; negative on error. */
+int audio_output_get_queued_frames(AudioOutput* output);
 const char* audio_output_get_error(AudioOutput* output);
 void audio_output_close(AudioOutput* output);
 

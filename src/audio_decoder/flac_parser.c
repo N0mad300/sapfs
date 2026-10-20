@@ -124,6 +124,11 @@ static int load_flac_library(void) {
     flac_lib_initialized = 1;
     
     flac_lib = LOAD_LIBRARY(LIB_NAME);
+#if defined(__linux__)
+    /* Distributions ship different libFLAC SONAMEs. */
+    if (!flac_lib) flac_lib = LOAD_LIBRARY("libFLAC.so.14");
+    if (!flac_lib) flac_lib = LOAD_LIBRARY("libFLAC.so.12");
+#endif
     if (!flac_lib) {
         snprintf(flac_lib_error, sizeof(flac_lib_error), "Failed to load %s. Please install libFLAC.", LIB_NAME);
         return -1;
@@ -363,8 +368,6 @@ size_t flac_read_samples(FlacFile* flac, void* buffer, size_t num_samples) {
 
     size_t samples_read = 0;
     size_t channels = flac->format.num_channels;
-    unsigned int bits = flac->original_bits_per_sample;
-    
     while (samples_read < num_samples) {
         if (flac->decode_buffer_pos < flac->decode_buffer_used) {
             size_t available = flac->decode_buffer_used - flac->decode_buffer_pos;

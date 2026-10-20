@@ -31,6 +31,7 @@ struct AudioDecoder {
     uint16_t            src_bits_per_sample;
     uint16_t            src_block_align;
     int                 src_is_float;
+    int                 native_output;
 
     uint8_t*            raw_buffer;
     size_t              raw_buffer_capacity;    /* in frames */
@@ -179,6 +180,22 @@ AudioDecoder* audio_decoder_open(const char* filepath) {
             return NULL;
     }
     
+    decoder->format.is_float = 1;
+    return decoder;
+}
+
+AudioDecoder* audio_decoder_open_native(const char* filepath) {
+    AudioDecoder* decoder = audio_decoder_open(filepath);
+    if (!decoder) return NULL;
+    decoder->native_output = 1;
+    decoder->format.bits_per_sample = decoder->src_bits_per_sample;
+    decoder->format.block_align = decoder->src_block_align;
+    decoder->format.is_float = decoder->src_is_float;
+    if (decoder->type == DECODER_TYPE_FLAC) {
+        /* libFLAC returns right-justified integers; expose a standard PCM width. */
+        unsigned int bits = decoder->format.valid_bits_per_sample;
+        decoder->format.bits_per_sample = bits <= 16 ? 16 : bits <= 24 ? 24 : 32;
+    }
     return decoder;
 }
 
@@ -190,6 +207,37 @@ int audio_decoder_get_format(AudioDecoder* decoder, AudioDecoderFormat* format) 
 
 size_t audio_decoder_read_samples(AudioDecoder* decoder, void* buffer, size_t num_samples) {
     if (!decoder || !buffer) return (size_t)-1;
+
+    if (decoder->native_output) {
+        switch (decoder->type) {
+            case DECODER_TYPE_WAVE:
+                return wave_read_samples(decoder->decoder_instance, buffer, num_samples);
+            case DECODER_TYPE_MP3:
+                return mp3_read_samples(decoder->decoder_instance, buffer, num_samples);
+            case DECODER_TYPE_FLAC: {
+                size_t frames = flac_read_samples(decoder->decoder_instance, buffer, num_samples);
+                unsigned int shift = decoder->format.bits_per_sample - decoder->format.valid_bits_per_sample;
+                if (frames == (size_t)-1 || !shift) return frames;
+                /* Lossless alignment for e.g. 12-bit FLAC in a 16-bit sample. */
+                for (size_t i = 0; i < frames * decoder->format.num_channels; ++i) {
+                    if (decoder->format.bits_per_sample == 16) {
+                        uint16_t value;
+                        memcpy(&value, (uint8_t*)buffer + i * 2, 2);
+                        value = (uint16_t)(value << shift);
+                        memcpy((uint8_t*)buffer + i * 2, &value, 2);
+                    } else {
+                        uint32_t value;
+                        memcpy(&value, (uint8_t*)buffer + i * 4, 4);
+                        value <<= shift;
+                        memcpy((uint8_t*)buffer + i * 4, &value, 4);
+                    }
+                }
+                return frames;
+            }
+            default:
+                return (size_t)-1;
+        }
+    }
 
     if (decoder->src_is_float) {
         switch (decoder->type) {

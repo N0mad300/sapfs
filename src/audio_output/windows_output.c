@@ -12,6 +12,7 @@
 struct AudioOutput {
     WindowsAudioBackend backend;
     void* impl;
+    uint32_t sample_rate;
     char error_msg[512];
 };
 
@@ -32,6 +33,7 @@ AudioOutput* windows_output_create(const AudioFormat* format, const WindowsAudio
     }
 
     output->backend = config ? config->backend : WINDOWS_AUDIO_BACKEND_WASAPI;
+    output->sample_rate = format->sample_rate;
 
     if (output->backend == WINDOWS_AUDIO_BACKEND_ASIO) {
         output->impl = asio_output_create(format, (const AsioConfig*)config->backend_config);
@@ -109,6 +111,11 @@ const char* audio_output_get_error(AudioOutput* output) {
     return (output->backend == WINDOWS_AUDIO_BACKEND_ASIO)
          ? asio_output_get_error((AsioOutput*)output->impl)
          : wasapi_output_get_error((WasapiOutput*)output->impl);
+}
+
+int audio_output_get_queued_frames(AudioOutput* output) {
+    int available = audio_output_get_available_frames(output);
+    return available < 0 ? -1 : (int)(output->sample_rate * 2) - available;
 }
 
 void audio_output_close(AudioOutput* output) {

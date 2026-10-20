@@ -5,6 +5,8 @@
     #include "windows_output.h"
 #elif defined(__APPLE__)
     #include "coreaudio_output.h"
+#elif defined(__linux__)
+    #include "linux_output.h"
 #endif
 
 /**
@@ -14,7 +16,7 @@
  * platform back-end:
  *   Windows  -> WASAPI / ASIO  (windows_output.c)
  *   macOS    -> CoreAudio AudioUnit  (coreaudio_output.c)
- *   Linux    -> stub (ALSA / PipeWire planned)
+ *   Linux    -> ALSA (linux_output.c)
  */
 
 AudioOutput* audio_output_init(const AudioFormat* format, AudioOutputConfig config) {
@@ -40,9 +42,7 @@ AudioOutput* audio_output_init(const AudioFormat* format, AudioOutputConfig conf
     return coreaudio_output_create(format, (const CoreAudioConfig*)config);
 
 #elif defined(__linux__)
-    (void)config;
-    /* Future: return alsa_output_create(format); */
-    return NULL;
+    return linux_output_create(format, (const LinuxAudioConfig*)config);
 
 #else
     (void)config;
