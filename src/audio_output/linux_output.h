@@ -4,8 +4,9 @@
 #include "audio_output.h"
 
 typedef enum {
-    LINUX_AUDIO_BACKEND_ALSA = 0
-    /* PipeWire, PulseAudio and JACK backends can be added here. */
+    LINUX_AUDIO_BACKEND_ALSA = 0,
+    LINUX_AUDIO_BACKEND_PIPEWIRE = 1
+    /* PulseAudio and JACK backends can be added here. */
 } LinuxAudioBackend;
 
 typedef struct {

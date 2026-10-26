@@ -31,6 +31,7 @@
 #elif defined(__linux__)
     #include "audio_output/linux_output.h"
     #include "audio_output/alsa_output.h"
+    #include "audio_output/pipewire_output.h"
 #endif
     #include <unistd.h>
     #include <termios.h>
@@ -92,6 +93,15 @@ static void print_asio_driver_name(const char* driver_name, void* user_data) {
 }
 #endif
 
+#if defined(__linux__) && defined(SAPFS_HAVE_PIPEWIRE)
+static void print_pipewire_device(const char* name, const char* description,
+                                  const char* serial, void* user_data) {
+    int* count = user_data;
+    printf("  %s\n    %s (serial %s)\n", name, description, serial);
+    ++*count;
+}
+#endif
+
 void setCursorVisible(int visible) {
 #if defined(_WIN32)
     HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -139,11 +149,14 @@ void print_usage(const char* program_name) {
     printf(" --exclusive       Use macOS Core Audio hog mode (bit-perfect)\n");
 #endif
 #ifdef __linux__
-    printf("  --output <name>  Select Linux backend: alsa (default)\n");
-    printf("  --device <pcm>   ALSA device (default: hw:0,0)\n");
-    printf("  --exclusive      Direct ALSA hardware, lossless playback (default)\n");
-    printf("  --shared         Allow ALSA plugins (default device: default)\n");
-    printf("  --buffer <ms>    ALSA hardware buffer duration, 10-5000 (default: 100)\n");
+    printf("  --output <name>  Linux backend: alsa (default) or pipewire\n");
+    printf("  --device <name>  ALSA PCM or PipeWire sink node.name/object.serial\n");
+    printf("  --exclusive      ALSA hardware / PipeWire exclusive linking, no client resampling\n");
+    printf("  --shared         ALSA plugins / PipeWire mixed playback\n");
+    printf("                   Defaults: ALSA exclusive, PipeWire shared\n");
+    printf("  --buffer <ms>    ALSA hardware / PipeWire application queue, 10-5000 (default: 100)\n");
+    printf("  --pipewire-remote <name>  Select a PipeWire server\n");
+    printf("  --list-pipewire-devices  List PipeWire playback sinks and exit\n");
 #endif
     printf("  --loop           Loop playback indefinitely\n");
     printf("  -h, --help       Show this help message\n");
@@ -200,7 +213,9 @@ int play_audio_file(const char* filepath,
                     int use_asio,
                     const char* asio_driver_name,
                     long asio_output_offset,
-                    const char* alsa_device) {
+                    const char* output_device,
+                    const char* linux_backend,
+                    const char* pipewire_remote) {
     AudioDecoder* decoder = NULL;
     AudioOutput* audio = NULL;
     AudioDecoderFormat decoder_format;
@@ -214,7 +229,9 @@ int play_audio_file(const char* filepath,
 #ifdef __linux__
     decoder = audio_decoder_open_native(filepath);
 #else
-    (void)alsa_device;
+    (void)output_device;
+    (void)linux_backend;
+    (void)pipewire_remote;
     decoder = audio_decoder_open(filepath);
 #endif
     if (!decoder) {
@@ -285,12 +302,25 @@ int play_audio_file(const char* filepath,
         AlsaConfig alsa_config = {0};
         LinuxAudioConfig linux_config;
         alsa_config.mode = use_exclusive ? ALSA_MODE_EXCLUSIVE : ALSA_MODE_SHARED;
-        alsa_config.device = alsa_device;
+        alsa_config.device = output_device;
         alsa_config.buffer_duration_ms = buffer_ms;
         linux_config.backend = LINUX_AUDIO_BACKEND_ALSA;
         linux_config.backend_config = &alsa_config;
-        printf("ALSA %s output: %s\n", use_exclusive ? "exclusive" : "plugin",
-               alsa_device ? alsa_device : use_exclusive ? "hw:0,0" : "default");
+        PipewireConfig pipewire_config = {0};
+        if (strcmp(linux_backend, "pipewire") == 0) {
+            pipewire_config.mode = use_exclusive ? PIPEWIRE_MODE_EXCLUSIVE : PIPEWIRE_MODE_SHARED;
+            pipewire_config.target = output_device;
+            pipewire_config.remote_name = pipewire_remote;
+            pipewire_config.stream_name = filepath;
+            pipewire_config.buffer_duration_ms = buffer_ms;
+            linux_config.backend = LINUX_AUDIO_BACKEND_PIPEWIRE;
+            linux_config.backend_config = &pipewire_config;
+            printf("PipeWire %s output: %s\n", use_exclusive ? "exclusive (server/device bit-perfect path unverified)" : "shared",
+                   output_device ? output_device : "default sink");
+        } else {
+            printf("ALSA %s output: %s\n", use_exclusive ? "exclusive" : "plugin",
+                   output_device ? output_device : use_exclusive ? "hw:0,0" : "default");
+        }
         audio = audio_output_init(&audio_format, &linux_config);
     }
 #else
@@ -327,11 +357,6 @@ int play_audio_file(const char* filepath,
     int is_paused = 0;
 
     int playback_failed = 0;
-#ifdef __linux__
-    const int drain_threshold = 0;
-#else
-    const int drain_threshold = 1000;
-#endif
     
     while (g_running) {
         int key = check_keypress();
@@ -393,15 +418,15 @@ int play_audio_file(const char* filepath,
         }
 
         if (is_draining) {
-            int queued = audio_output_get_queued_frames(audio);
-            if (queued < 0) {
+            int drained = audio_output_drain(audio);
+            if (drained < 0) {
                 const char* err = audio_output_get_error(audio);
-                fprintf(stderr, "\nError querying queued audio: %s\n", err ? err : "unknown");
+                fprintf(stderr, "\nError draining audio: %s\n", err ? err : "unknown");
                 playback_failed = 1;
                 break;
             }
             
-            if (queued <= drain_threshold) {
+            if (drained) {
                 if (loop_mode && g_running) {
                     /* LOOP: Seek to start and reset draining flag */
                     if (audio_decoder_seek(decoder, 0) == 0) {
@@ -481,7 +506,7 @@ int main(int argc, char** argv) {
     /* Parse command-line arguments */
     const char* filepath = NULL;
 #ifdef __linux__
-    int use_exclusive = 1;
+    int use_exclusive = -1; /* Backend-specific default, applied after parsing. */
 #else
     int use_exclusive = 0;
 #endif
@@ -493,7 +518,12 @@ int main(int argc, char** argv) {
 #endif
     const char* asio_driver_name = NULL;
     long asio_output_offset = 0;
-    const char* alsa_device = NULL;
+    const char* output_device = NULL;
+    const char* linux_backend = "alsa";
+    const char* pipewire_remote = NULL;
+#ifdef __linux__
+    int list_pipewire_devices = 0;
+#endif
     
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
@@ -593,21 +623,33 @@ int main(int argc, char** argv) {
         }
         else if (strcmp(argv[i], "--device") == 0) {
             if (i + 1 >= argc || argv[i + 1][0] == '-' || !argv[i + 1][0]) {
-                fprintf(stderr, "Error: --device requires an ALSA PCM name\n");
+                fprintf(stderr, "Error: --device requires an ALSA PCM or PipeWire sink name\n");
                 restore_terminal_input();
                 setCursorVisible(1);
                 return 1;
             }
-            alsa_device = argv[++i];
+            output_device = argv[++i];
         }
         else if (strcmp(argv[i], "--output") == 0 || strcmp(argv[i], "--backend") == 0) {
-            if (i + 1 >= argc || strcmp(argv[i + 1], "alsa") != 0) {
-                fprintf(stderr, "Error: --output must be 'alsa'\n");
+            if (i + 1 >= argc || (strcmp(argv[i + 1], "alsa") != 0 && strcmp(argv[i + 1], "pipewire") != 0)) {
+                fprintf(stderr, "Error: --output must be 'alsa' or 'pipewire'\n");
                 restore_terminal_input();
                 setCursorVisible(1);
                 return 1;
             }
-            ++i;
+            linux_backend = argv[++i];
+        }
+        else if (strcmp(argv[i], "--list-pipewire-devices") == 0) {
+            list_pipewire_devices = 1;
+        }
+        else if (strcmp(argv[i], "--pipewire-remote") == 0) {
+            if (i + 1 >= argc || argv[i + 1][0] == '-' || !argv[i + 1][0]) {
+                fprintf(stderr, "Error: --pipewire-remote requires a server name\n");
+                restore_terminal_input();
+                setCursorVisible(1);
+                return 1;
+            }
+            pipewire_remote = argv[++i];
         }
         else if (strcmp(argv[i], "--buffer") == 0) {
             char* end = NULL;
@@ -656,6 +698,39 @@ int main(int argc, char** argv) {
     }
 #endif
     
+#ifdef __linux__
+    if (use_exclusive < 0) use_exclusive = strcmp(linux_backend, "alsa") == 0;
+    if (pipewire_remote && !list_pipewire_devices && strcmp(linux_backend, "pipewire") != 0) {
+        fprintf(stderr, "Error: --pipewire-remote requires --output pipewire\n");
+        restore_terminal_input();
+        setCursorVisible(1);
+        return 1;
+    }
+    /* libpipewire gives PIPEWIRE_REMOTE precedence over remote.name. Make an
+     * explicit CLI choice override the inherited environment for this process. */
+    if (pipewire_remote && setenv("PIPEWIRE_REMOTE", pipewire_remote, 1) != 0) {
+        perror("Error selecting PipeWire server");
+        restore_terminal_input();
+        setCursorVisible(1);
+        return 1;
+    }
+    if (list_pipewire_devices) {
+        int status = -1;
+#ifdef SAPFS_HAVE_PIPEWIRE
+        int count = 0;
+        printf("PipeWire playback sinks:\n");
+        status = pipewire_output_list_devices(pipewire_remote, print_pipewire_device, &count);
+        if (status < 0) fprintf(stderr, "Error: %s\n", pipewire_output_get_last_error());
+        else if (!count) printf("  (none found)\n");
+#else
+        fprintf(stderr, "Error: PipeWire support was not built; rebuild with WITH_PIPEWIRE=1\n");
+#endif
+        restore_terminal_input();
+        setCursorVisible(1);
+        return status < 0 ? 1 : 0;
+    }
+#endif
+
     if (!filepath) {
         fprintf(stderr, "Error: No audio file specified\n");
         restore_terminal_input();
@@ -683,7 +758,9 @@ int main(int argc, char** argv) {
                                  use_asio,
                                  asio_driver_name,
                                  asio_output_offset,
-                                 alsa_device);
+                                 output_device,
+                                 linux_backend,
+                                 pipewire_remote);
     
     setCursorVisible(1);
     

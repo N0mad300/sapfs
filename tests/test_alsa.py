@@ -96,7 +96,7 @@ def main():
         play(path, left_aligned)
 
         for options in (("--device", "null"), ("--exclusive", "--device", "null"),
-                        ("--output", "pipewire"), ("--buffer", "12bad"),
+                        ("--output", "unknown"), ("--buffer", "12bad"),
                         ("--buffer", "9"), ("--buffer", "5001"),
                         ("--buffer",), ("--device",)):
             result = subprocess.run([str(binary), *options, str(path)], env=env,

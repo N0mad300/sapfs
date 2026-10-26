@@ -16,7 +16,7 @@
  * platform back-end:
  *   Windows  -> WASAPI / ASIO  (windows_output.c)
  *   macOS    -> CoreAudio AudioUnit  (coreaudio_output.c)
- *   Linux    -> ALSA (linux_output.c)
+ *   Linux    -> ALSA / PipeWire (linux_output.c)
  */
 
 AudioOutput* audio_output_init(const AudioFormat* format, AudioOutputConfig config) {
@@ -49,3 +49,10 @@ AudioOutput* audio_output_init(const AudioFormat* format, AudioOutputConfig conf
     return NULL;
 #endif
 }
+
+#ifndef __linux__
+int audio_output_drain(AudioOutput* output) {
+    int queued = audio_output_get_queued_frames(output);
+    return queued < 0 ? -1 : queued == 0;
+}
+#endif

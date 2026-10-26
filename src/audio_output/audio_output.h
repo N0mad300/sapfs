@@ -36,6 +36,9 @@ AudioState audio_output_get_state(AudioOutput* output);
 int audio_output_get_available_frames(AudioOutput* output);
 /* Frames still queued for playback; negative on error. */
 int audio_output_get_queued_frames(AudioOutput* output);
+/* Signal end of input and poll playback completion: 1 done, 0 pending, -1 error.
+ * After completion a write may begin a new segment, e.g. for looping. */
+int audio_output_drain(AudioOutput* output);
 const char* audio_output_get_error(AudioOutput* output);
 void audio_output_close(AudioOutput* output);
 
