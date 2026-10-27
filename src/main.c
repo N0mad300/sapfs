@@ -1,5 +1,6 @@
 #include "audio_decoder/audio_decoder.h"
 #include "audio_output/audio_output.h"
+#include "audio_output/jack_output.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -102,6 +103,14 @@ static void print_pipewire_device(const char* name, const char* description,
 }
 #endif
 
+#if defined(__linux__) && defined(SAPFS_HAVE_JACK)
+static void print_jack_port(const char* name, int is_physical, void* user_data) {
+    int* count = user_data;
+    printf("  %s%s\n", name, is_physical ? " (physical)" : "");
+    ++*count;
+}
+#endif
+
 void setCursorVisible(int visible) {
 #if defined(_WIN32)
     HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -149,14 +158,19 @@ void print_usage(const char* program_name) {
     printf(" --exclusive       Use macOS Core Audio hog mode (bit-perfect)\n");
 #endif
 #ifdef __linux__
-    printf("  --output <name>  Linux backend: alsa (default) or pipewire\n");
-    printf("  --device <name>  ALSA PCM or PipeWire sink node.name/object.serial\n");
+    printf("  --output <name>  Linux backend: alsa (default), pipewire, or jack\n");
+    printf("  --device <name>  ALSA PCM, PipeWire sink, or JACK destination-port regex\n");
     printf("  --exclusive      ALSA hardware / PipeWire exclusive linking, no client resampling\n");
     printf("  --shared         ALSA plugins / PipeWire mixed playback\n");
-    printf("                   Defaults: ALSA exclusive, PipeWire shared\n");
-    printf("  --buffer <ms>    ALSA hardware / PipeWire application queue, 10-5000 (default: 100)\n");
+    printf("                   Defaults: ALSA exclusive, PipeWire/JACK shared; JACK has no exclusive mode\n");
+    printf("  --buffer <ms>    ALSA hardware / PipeWire/JACK application queue, 10-5000 (default: 100)\n");
     printf("  --pipewire-remote <name>  Select a PipeWire server\n");
     printf("  --list-pipewire-devices  List PipeWire playback sinks and exit\n");
+    printf("  --jack-server <name>     Select an already running JACK server\n");
+    printf("  --jack-name <name>       Request a JACK client name (default: sapfs)\n");
+    printf("  --jack-port <name>       Destination for the next source channel; repeat per channel\n");
+    printf("  --jack-no-connect        Route out_1..out_N manually with a JACK patchbay\n");
+    printf("  --list-jack-ports        List destination audio input ports and exit\n");
 #endif
     printf("  --loop           Loop playback indefinitely\n");
     printf("  -h, --help       Show this help message\n");
@@ -215,7 +229,8 @@ int play_audio_file(const char* filepath,
                     long asio_output_offset,
                     const char* output_device,
                     const char* linux_backend,
-                    const char* pipewire_remote) {
+                    const char* pipewire_remote,
+                    const JackConfig* jack_options) {
     AudioDecoder* decoder = NULL;
     AudioOutput* audio = NULL;
     AudioDecoderFormat decoder_format;
@@ -232,6 +247,7 @@ int play_audio_file(const char* filepath,
     (void)output_device;
     (void)linux_backend;
     (void)pipewire_remote;
+    (void)jack_options;
     decoder = audio_decoder_open(filepath);
 #endif
     if (!decoder) {
@@ -307,6 +323,7 @@ int play_audio_file(const char* filepath,
         linux_config.backend = LINUX_AUDIO_BACKEND_ALSA;
         linux_config.backend_config = &alsa_config;
         PipewireConfig pipewire_config = {0};
+        JackConfig jack_config = *jack_options;
         if (strcmp(linux_backend, "pipewire") == 0) {
             pipewire_config.mode = use_exclusive ? PIPEWIRE_MODE_EXCLUSIVE : PIPEWIRE_MODE_SHARED;
             pipewire_config.target = output_device;
@@ -317,6 +334,14 @@ int play_audio_file(const char* filepath,
             linux_config.backend_config = &pipewire_config;
             printf("PipeWire %s output: %s\n", use_exclusive ? "exclusive (server/device bit-perfect path unverified)" : "shared",
                    output_device ? output_device : "default sink");
+        } else if (strcmp(linux_backend, "jack") == 0) {
+            jack_config.port_pattern = output_device;
+            jack_config.buffer_duration_ms = buffer_ms;
+            linux_config.backend = LINUX_AUDIO_BACKEND_JACK;
+            linux_config.backend_config = &jack_config;
+            printf("JACK shared float32 output: %s\n", jack_config.connection_mode == JACK_CONNECT_MANUAL
+                   ? "manual routing; connect every out_N port before audio can play"
+                   : output_device ? output_device : jack_config.ports ? "explicit channel mapping" : "physical playback ports");
         } else {
             printf("ALSA %s output: %s\n", use_exclusive ? "exclusive" : "plugin",
                    output_device ? output_device : use_exclusive ? "hw:0,0" : "default");
@@ -521,8 +546,12 @@ int main(int argc, char** argv) {
     const char* output_device = NULL;
     const char* linux_backend = "alsa";
     const char* pipewire_remote = NULL;
+    JackConfig jack_config = {0};
 #ifdef __linux__
     int list_pipewire_devices = 0;
+    int list_jack_ports = 0;
+    int jack_options_used = 0;
+    const char* jack_ports[8] = {0};
 #endif
     
     for (int i = 1; i < argc; i++) {
@@ -623,7 +652,7 @@ int main(int argc, char** argv) {
         }
         else if (strcmp(argv[i], "--device") == 0) {
             if (i + 1 >= argc || argv[i + 1][0] == '-' || !argv[i + 1][0]) {
-                fprintf(stderr, "Error: --device requires an ALSA PCM or PipeWire sink name\n");
+                fprintf(stderr, "Error: --device requires an ALSA PCM, PipeWire sink, or JACK port regex\n");
                 restore_terminal_input();
                 setCursorVisible(1);
                 return 1;
@@ -631,8 +660,8 @@ int main(int argc, char** argv) {
             output_device = argv[++i];
         }
         else if (strcmp(argv[i], "--output") == 0 || strcmp(argv[i], "--backend") == 0) {
-            if (i + 1 >= argc || (strcmp(argv[i + 1], "alsa") != 0 && strcmp(argv[i + 1], "pipewire") != 0)) {
-                fprintf(stderr, "Error: --output must be 'alsa' or 'pipewire'\n");
+            if (i + 1 >= argc || (strcmp(argv[i + 1], "alsa") != 0 && strcmp(argv[i + 1], "pipewire") != 0 && strcmp(argv[i + 1], "jack") != 0)) {
+                fprintf(stderr, "Error: --output must be 'alsa', 'pipewire', or 'jack'\n");
                 restore_terminal_input();
                 setCursorVisible(1);
                 return 1;
@@ -641,6 +670,32 @@ int main(int argc, char** argv) {
         }
         else if (strcmp(argv[i], "--list-pipewire-devices") == 0) {
             list_pipewire_devices = 1;
+        }
+        else if (strcmp(argv[i], "--list-jack-ports") == 0) {
+            list_jack_ports = 1;
+        }
+        else if (strcmp(argv[i], "--jack-no-connect") == 0) {
+            jack_config.connection_mode = JACK_CONNECT_MANUAL;
+            jack_options_used = 1;
+        }
+        else if (strcmp(argv[i], "--jack-server") == 0 || strcmp(argv[i], "--jack-name") == 0 || strcmp(argv[i], "--jack-port") == 0) {
+            const char* option = argv[i];
+            if (i + 1 >= argc || !argv[i + 1][0] || argv[i + 1][0] == '-') {
+                fprintf(stderr, "Error: %s requires a name\n", option);
+                restore_terminal_input(); setCursorVisible(1); return 1;
+            }
+            const char* value = argv[++i];
+            if (strcmp(option, "--jack-server") == 0) jack_config.server_name = value;
+            else if (strcmp(option, "--jack-name") == 0) jack_config.client_name = value;
+            else {
+                if (jack_config.num_ports == 8) {
+                    fprintf(stderr, "Error: at most eight JACK destination ports are supported\n");
+                    restore_terminal_input(); setCursorVisible(1); return 1;
+                }
+                jack_ports[jack_config.num_ports++] = value;
+                jack_config.ports = jack_ports;
+            }
+            jack_options_used = 1;
         }
         else if (strcmp(argv[i], "--pipewire-remote") == 0) {
             if (i + 1 >= argc || argv[i + 1][0] == '-' || !argv[i + 1][0]) {
@@ -700,6 +755,15 @@ int main(int argc, char** argv) {
     
 #ifdef __linux__
     if (use_exclusive < 0) use_exclusive = strcmp(linux_backend, "alsa") == 0;
+    if ((list_jack_ports && list_pipewire_devices) ||
+        (jack_options_used && !list_jack_ports && strcmp(linux_backend, "jack") != 0)) {
+        fprintf(stderr, "Error: choose one port/device list; JACK options require --output jack or --list-jack-ports\n");
+        restore_terminal_input(); setCursorVisible(1); return 1;
+    }
+    if (use_exclusive && strcmp(linux_backend, "jack") == 0 && !list_jack_ports) {
+        fprintf(stderr, "Error: JACK has no per-client exclusive hardware mode; use --shared or --output alsa --exclusive\n");
+        restore_terminal_input(); setCursorVisible(1); return 1;
+    }
     if (pipewire_remote && !list_pipewire_devices && strcmp(linux_backend, "pipewire") != 0) {
         fprintf(stderr, "Error: --pipewire-remote requires --output pipewire\n");
         restore_terminal_input();
@@ -728,6 +792,19 @@ int main(int argc, char** argv) {
         restore_terminal_input();
         setCursorVisible(1);
         return status < 0 ? 1 : 0;
+    }
+    if (list_jack_ports) {
+        int status = -1;
+#ifdef SAPFS_HAVE_JACK
+        int count = 0;
+        printf("JACK destination audio ports:\n");
+        status = jack_output_list_ports(jack_config.server_name, output_device, print_jack_port, &count);
+        if (status < 0) fprintf(stderr, "Error: %s\n", jack_output_get_last_error());
+        else if (!count) printf("  (none found)\n");
+#else
+        fprintf(stderr, "Error: JACK support was not built; rebuild with WITH_JACK=1\n");
+#endif
+        restore_terminal_input(); setCursorVisible(1); return status < 0 ? 1 : 0;
     }
 #endif
 
@@ -760,7 +837,8 @@ int main(int argc, char** argv) {
                                  asio_output_offset,
                                  output_device,
                                  linux_backend,
-                                 pipewire_remote);
+                                 pipewire_remote,
+                                 &jack_config);
     
     setCursorVisible(1);
     

@@ -6,6 +6,9 @@
 #ifdef SAPFS_HAVE_PIPEWIRE
 #include "pipewire_output.h"
 #endif
+#ifdef SAPFS_HAVE_JACK
+#include "jack_output.h"
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -58,6 +61,12 @@ static int pipewire_drain_adapter(void* p) { return pipewire_output_drain(p); }
 static const LinuxAudioOps pipewire_ops = BACKEND_OPS(pipewire_output, pipewire_drain_adapter);
 #endif
 
+#ifdef SAPFS_HAVE_JACK
+BACKEND_ADAPTERS(jack_output, JackOutput, JackConfig)
+static int jack_drain_adapter(void* p) { return jack_output_drain(p); }
+static const LinuxAudioOps jack_ops = BACKEND_OPS(jack_output, jack_drain_adapter);
+#endif
+
 struct AudioOutput {
     const LinuxAudioOps* ops;
     void* impl;
@@ -79,6 +88,14 @@ AudioOutput* linux_output_create(const AudioFormat* format, const LinuxAudioConf
         break;
 #else
         snprintf(last_error, sizeof(last_error), "PipeWire support was not built; install libpipewire-0.3 development files and rebuild with WITH_PIPEWIRE=1");
+        return NULL;
+#endif
+    case LINUX_AUDIO_BACKEND_JACK:
+#ifdef SAPFS_HAVE_JACK
+        ops = &jack_ops;
+        break;
+#else
+        snprintf(last_error, sizeof(last_error), "JACK support was not built; install JACK development files and rebuild with WITH_JACK=1");
         return NULL;
 #endif
     default:

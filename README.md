@@ -25,6 +25,10 @@ A lightweight, cross-platform command-line audio player written in C. Plays WAV,
   - Shared desktop playback with mixing and resampling
   - Exclusive session-manager linking with client resampling/remixing disabled
   - Sink discovery, target selection, remote server selection, and asynchronous draining
+- Linux **JACK** audio output:
+  - Shared planar float32 playback at the server's sample rate
+  - Automatic physical-port routing, destination patterns, explicit channel mapping, or manual patchbay routing
+  - Lock-free callback buffering, server selection, port discovery, pause/resume and drain
 - Configurable **buffer size** (Windows shared mode and Linux backends)
 - Internal **32-bit float pipeline** on Windows/macOS; **native PCM delivery** to Linux backends
 - TPDF **dithering** when converting float → 16-bit PCM
@@ -43,6 +47,8 @@ A lightweight, cross-platform command-line audio player written in C. Plays WAV,
 
 PipeWire support additionally needs `libpipewire-0.3` development files, version
 0.3.50 or newer (`libpipewire-0.3-dev` on Debian/Ubuntu, `pipewire-devel` on Fedora).
+JACK support additionally needs a JACK development package providing `jack.pc`
+(`libjack-jackd2-dev` on Debian/Ubuntu). Either optional backend can be disabled.
 
 ### Runtime Dependencies
 
@@ -56,6 +62,8 @@ Codec libraries are loaded at **runtime** via `dlopen`/`LoadLibrary` and are not
 Builds with PipeWire enabled also link against `libpipewire-0.3`. Playback through
 PipeWire requires a running server and a session manager providing audio routing
 and exclusive-link policy, such as WirePlumber.
+Builds with JACK enabled link against `libjack` and require an already running
+JACK server, or a compatible JACK implementation. Sapfs never starts a server.
 
 ---
 
@@ -68,6 +76,8 @@ and exclusive-link policy, such as WirePlumber.
 sudo apt install build-essential pkg-config libasound2-dev libflac14 libmpg123-0
 # Optional PipeWire backend
 sudo apt install libpipewire-0.3-dev
+# Optional JACK backend
+sudo apt install libjack-jackd2-dev
 ./build_linux.sh
 ```
 
@@ -79,6 +89,10 @@ The build automatically enables PipeWire when its development files are found.
 Use `WITH_PIPEWIRE=1 ./build_linux.sh` to require it, or
 `WITH_PIPEWIRE=0 ./build_linux.sh` for an ALSA-only binary. A binary without
 PipeWire reports a build-support error if that backend is selected.
+JACK is also enabled automatically when its development files are found.
+`WITH_JACK=1 ./build_linux.sh` requires JACK support; `WITH_JACK=0` excludes it.
+For ALSA alone, set both `WITH_PIPEWIRE=0 WITH_JACK=0`. The build prints the
+enabled backends.
 
 ### Windows
 
@@ -139,14 +153,19 @@ sapfs [OPTIONS] <audio_file>
 | Option | Description | Platform |
 |--------|-------------|----------|
 | `--exclusive` | WASAPI exclusive, CoreAudio hog, direct ALSA hardware, or PipeWire exclusive linking | All |
-| `--shared` | Allow ALSA plugins or use PipeWire mixed playback | Linux only |
-| `--device <name>` | ALSA PCM or PipeWire sink `node.name` / `object.serial` | Linux only |
+| `--shared` | Allow ALSA plugins, use PipeWire mixed playback, or use JACK's shared graph | Linux only |
+| `--device <name>` | ALSA PCM, PipeWire sink `node.name` / `object.serial`, or JACK destination-port regex | Linux only |
 | `--buffer <ms>` | Buffer duration, 10–5000 ms; Linux default 100 ms | Windows shared mode / Linux |
 | `--asio` | Use ASIO audio output | Windows only |
 | `--output <wasapi\|asio>` | Select the Windows output backend | Windows only |
-| `--output <alsa\|pipewire>` | Select the Linux output backend; default ALSA (`--backend` is an alias) | Linux only |
+| `--output <alsa\|pipewire\|jack>` | Select the Linux output backend; default ALSA (`--backend` is an alias) | Linux only |
 | `--pipewire-remote <name>` | Select a PipeWire server; otherwise use the standard PipeWire environment/default | Linux only |
 | `--list-pipewire-devices` | List sink names, descriptions, and object serials, then exit | Linux only |
+| `--jack-server <name>` | Select an already running JACK server; otherwise use the JACK default/environment | Linux only |
+| `--jack-name <name>` | Request a JACK client name, default `sapfs`; JACK may make it unique | Linux only |
+| `--jack-port <name>` | Repeat once per source channel to specify destination audio input ports in source order | Linux only |
+| `--jack-no-connect` | Route `out_1` through `out_N` manually with a JACK patchbay | Linux only |
+| `--list-jack-ports` | List destination audio input ports and exit; accepts `--jack-server` and `--device` filtering | Linux only |
 | `--asio-driver <name>` | Use a specific ASIO driver name | Windows only |
 | `--asio-output <n>` | Set the first ASIO output channel, zero-based | Windows only |
 | `--list-asio-drivers` | List installed ASIO drivers and exit | Windows only |
@@ -273,6 +292,77 @@ complete frames under backpressure. Pause/resume keeps the application queue;
 stop discards it. EOF uses PipeWire's drain notification, including queued
 converter/device data, and a completed stream can be reused for loop playback.
 
+### JACK playback on Linux
+
+```bash
+# Connect source channels to the first matching physical playback ports
+dist/sapfs --output jack song.flac
+
+# List destination audio input ports, including virtual clients
+dist/sapfs --list-jack-ports
+
+# Select an already running named server
+dist/sapfs --output jack --jack-server studio song.wav
+
+# Choose destination ports by a JACK regular expression
+dist/sapfs --output jack --device '^effects:in_' song.wav
+
+# Explicit channel mapping: left -> playback_3, right -> playback_4
+dist/sapfs --output jack --jack-port system:playback_3 --jack-port system:playback_4 song.wav
+
+# Use a patchbay to connect the registered output ports yourself
+dist/sapfs --output jack --jack-name music --jack-no-connect song.wav
+```
+
+JACK playback uses the server's shared graph. `--shared` is accepted and is the
+default for this backend. **JACK does not provide per-client exclusive hardware
+access**, so `--exclusive` reports an error instead of implying bit-perfect
+playback. This backend does not change the server's sample rate, period size,
+global transport, or other clients' connections, and opens with `JackNoStartServer`.
+
+The file's sample rate must exactly match the JACK server's rate. A mismatch
+reports both rates and fails without resampling. JACK's audio ports use float32:
+the backend converts unsigned 8-bit and signed 16/24/32-bit PCM on the writing
+thread, accepts packed/padded 24-bit containers and float32, and deinterleaves
+frames into one JACK output port per source channel. Conversion preserves
+integer samples up to 24 bits; full 32-bit integer precision cannot be preserved
+in float32. Downstream mixing, effects, gain, conversion and hardware behavior
+remain outside this backend's control. Direct ALSA is available for strict
+hardware playback. These semantics also apply when a PipeWire JACK compatibility
+library supplies the JACK API.
+
+Automatic routing requires at least as many matching destination ports as source
+channels and selects them in JACK's returned order. Explicit `--jack-port`
+arguments must provide one distinct audio input port per source channel, in the
+file's channel order. JACK ports have no implicit speaker-layout mapping; use
+explicit mappings when multichannel hardware order differs. A destination pattern
+and explicit mappings are mutually exclusive. `--jack-no-connect` accepts neither.
+
+Manual routing retains queued frames until **every source output port** is
+connected, so connecting channels one at a time cannot discard the other channels.
+Waiting for manual connections is intentional and continues until you connect
+the ports or stop playback. Automatic routing holds the queue during a temporary
+disconnection, then reports an error if a channel remains disconnected for five
+seconds by default. It does not silently select replacement ports.
+
+`--buffer` controls the application FIFO, not the server quantum. Its frame
+capacity is rounded up to a power of two and holds at least two initial server
+periods, even when the requested duration is shorter. PCM conversion and port queries stay
+off the real-time thread; the process callback uses preallocated storage and
+lock-free atomics, and writes silence during underflow, pause or stop. Pause and
+stop wait for callback acknowledgement; pause preserves the remaining queue,
+while stop clears it. Both preserve port connections by keeping the client
+active and silent. Closing the output unregisters its ports and releases the
+client. Drain includes a graph cycle and reported downstream playback latency,
+and the same client can be reused for looping. Server shutdown, rate changes and
+stalled processing are reported; period changes that fit the preallocated FIFO
+are supported without callback allocation. A larger period fails with a request
+to reopen with a larger buffer. JACK xruns are counted and processing continues.
+
+See the official [JACK client API](https://jackaudio.org/api/group__ClientFunctions.html),
+[callback requirements](https://jackaudio.org/api/group__ClientCallbacks.html), and
+[latency API](https://jackaudio.org/api/group__LatencyFunctions.html).
+
 ---
 
 ## Architecture
@@ -293,6 +383,7 @@ main.c
 │   ├── linux_output.c        # Linux backend selector and operation dispatch
 │   ├── alsa_output.c         # ALSA PCM negotiation, lossless packing and playback
 │   ├── pipewire_output.c     # PipeWire stream, PCM queue, sink discovery and drain
+│   ├── jack_output.c         # JACK client, SPSC float FIFO, port routing and drain
 │   └── ring_buffer.c         # Thread-safe ring buffer (producer/consumer)
 └── audio_converter.c         # PCM format converters (8/16/24/32-bit ↔ float)
 ```
@@ -306,15 +397,17 @@ File -> [Decoder] -> float PCM -> [Ring Buffer] -> [Output Backend] -> [Device]
 - **Windows (WASAPI)**: A dedicated consumer thread (`_beginthreadex`) drains the ring buffer on `WaitForSingleObject`, registered under MMCSS `Pro Audio` priority.
 - **Windows (ASIO)**: The ASIO driver owns the real-time callback. The callback drains interleaved float PCM from the ring buffer, de-interleaves it into ASIO output channels, and converts to the driver's sample type.
 - **macOS (CoreAudio)**: The AudioUnit engine drives a pull-model render callback on its own real-time thread. The callback drains the ring buffer each time the engine needs a block of samples. Underruns are zero-padded to avoid noise.
-- **Linux**: `audio_output.c` delegates to `linux_output.c`, which owns backend selection and dispatch through a table of operations. PulseAudio and JACK can be added as separate backend modules.
+- **Linux**: `audio_output.c` delegates to `linux_output.c`, which owns backend selection and dispatch through a table of operations. PulseAudio can be added as another backend module.
 - **ALSA**: Uses nonblocking interleaved writes into the device buffer. The player retains partial writes, remains responsive to controls under backpressure, and waits for the device's queued frames at EOF. Underruns and device suspension are recovered where possible.
 - **PipeWire**: Uses an independent `pw_thread_loop` and a bounded, frame-aligned FIFO. Process callbacks and API operations are serialized by the loop; `RT_PROCESS` is deliberately omitted so application locking and error reporting do not run on PipeWire's realtime data thread. The stream negotiates the native application PCM format and channel layout. Server processing follows the selected mode. EOF is an explicit nonblocking drain operation rather than an inference from constant graph latency.
+- **JACK**: The writing thread converts native PCM into a bounded interleaved float SPSC queue. JACK's process callback deinterleaves it into output ports without locks, allocation or I/O. Atomic control acknowledgements coordinate pause/stop with queue resets. Port-connection notifications invalidate an owner-thread routing snapshot so the callback can hold data until every channel is connected.
 
 The Linux application preserves native decoder PCM up to the backend:
 
 ```
 File -> [Native PCM Decoder] -> [ALSA: optional lossless packing] -> [Device Buffer] -> [Device]
                            \-> [PipeWire FIFO] -> [PipeWire Graph] -> [Sink/Device]
+                           \-> [JACK float FIFO] -> [JACK Ports/Graph] -> [Destination]
 ```
 
 The ring buffer implementation is fully cross-platform, using `CRITICAL_SECTION` / `CONDITION_VARIABLE` on Windows and `pthread_mutex_t` / `pthread_cond_t` on POSIX platforms.
@@ -349,6 +442,22 @@ backpressure, drain/restart, short and empty files, shared resampling, exclusive
 rate rejection, busy-sink rejection, missing targets, graph stalls and server
 disconnects. Physical sink behavior and end-to-end DAC precision require hardware
 verification.
+
+### JACK verification
+
+```bash
+python3 tests/test_jack.py
+```
+
+Requires JACK development files and JACK2's `jackd` with the dummy driver.
+`JACKD` can point to a server executable outside `PATH`. Tests create a private
+named server with virtual playback ports and capture clients; no audio hardware
+or existing desktop/JACK server is used. They compare captured PCM and float
+sample sequences, including packed/padded 24-bit, one-frame files and eight
+channels, and exercise queue wrap/backpressure, pause/resume, drain/restart,
+period changes, manual/explicit routing, disconnected ports, simultaneous
+clients, rate changes, missing servers and shutdown. Hardware latency and audible
+output still require a physical-device test.
 
 ---
 
