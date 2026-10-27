@@ -29,6 +29,10 @@ A lightweight, cross-platform command-line audio player written in C. Plays WAV,
   - Shared planar float32 playback at the server's sample rate
   - Automatic physical-port routing, destination patterns, explicit channel mapping, or manual patchbay routing
   - Lock-free callback buffering, server selection, port discovery, pause/resume and drain
+- Linux **PulseAudio** audio output:
+  - Shared desktop playback with server-managed mixing, resampling and volume
+  - Native PCM delivery, sink/server selection and playback-sink discovery
+  - Bounded partial writes, pause/resume, stop/restart and asynchronous EOF draining
 - Configurable **buffer size** (Windows shared mode and Linux backends)
 - Internal **32-bit float pipeline** on Windows/macOS; **native PCM delivery** to Linux backends
 - TPDF **dithering** when converting float → 16-bit PCM
@@ -48,7 +52,10 @@ A lightweight, cross-platform command-line audio player written in C. Plays WAV,
 PipeWire support additionally needs `libpipewire-0.3` development files, version
 0.3.50 or newer (`libpipewire-0.3-dev` on Debian/Ubuntu, `pipewire-devel` on Fedora).
 JACK support additionally needs a JACK development package providing `jack.pc`
-(`libjack-jackd2-dev` on Debian/Ubuntu). Either optional backend can be disabled.
+(`libjack-jackd2-dev` on Debian/Ubuntu).
+PulseAudio support additionally needs `libpulse` development files
+(`libpulse-dev` on Debian/Ubuntu, `pulseaudio-libs-devel` on Fedora). Each optional
+backend can be disabled independently.
 
 ### Runtime Dependencies
 
@@ -64,6 +71,9 @@ PipeWire requires a running server and a session manager providing audio routing
 and exclusive-link policy, such as WirePlumber.
 Builds with JACK enabled link against `libjack` and require an already running
 JACK server, or a compatible JACK implementation. Sapfs never starts a server.
+Builds with PulseAudio enabled link against `libpulse` and require a running
+PulseAudio server or a compatible service such as `pipewire-pulse`. PulseAudio
+autospawn is disabled for both playback and discovery.
 
 ---
 
@@ -78,6 +88,8 @@ sudo apt install build-essential pkg-config libasound2-dev libflac14 libmpg123-0
 sudo apt install libpipewire-0.3-dev
 # Optional JACK backend
 sudo apt install libjack-jackd2-dev
+# Optional PulseAudio backend
+sudo apt install libpulse-dev
 ./build_linux.sh
 ```
 
@@ -87,12 +99,14 @@ or `libflac12`.
 
 The build automatically enables PipeWire when its development files are found.
 Use `WITH_PIPEWIRE=1 ./build_linux.sh` to require it, or
-`WITH_PIPEWIRE=0 ./build_linux.sh` for an ALSA-only binary. A binary without
+`WITH_PIPEWIRE=0 ./build_linux.sh` to exclude PipeWire. A binary without
 PipeWire reports a build-support error if that backend is selected.
 JACK is also enabled automatically when its development files are found.
 `WITH_JACK=1 ./build_linux.sh` requires JACK support; `WITH_JACK=0` excludes it.
-For ALSA alone, set both `WITH_PIPEWIRE=0 WITH_JACK=0`. The build prints the
-enabled backends.
+PulseAudio follows the same convention: `WITH_PULSEAUDIO=1 ./build_linux.sh`
+requires support; `WITH_PULSEAUDIO=0` excludes it; the default is `auto`.
+For ALSA alone, set `WITH_PIPEWIRE=0 WITH_JACK=0 WITH_PULSEAUDIO=0`.
+The build prints the enabled backends.
 
 ### Windows
 
@@ -153,12 +167,12 @@ sapfs [OPTIONS] <audio_file>
 | Option | Description | Platform |
 |--------|-------------|----------|
 | `--exclusive` | WASAPI exclusive, CoreAudio hog, direct ALSA hardware, or PipeWire exclusive linking | All |
-| `--shared` | Allow ALSA plugins, use PipeWire mixed playback, or use JACK's shared graph | Linux only |
-| `--device <name>` | ALSA PCM, PipeWire sink `node.name` / `object.serial`, or JACK destination-port regex | Linux only |
+| `--shared` | Allow ALSA plugins, use PipeWire mixed playback, use JACK's shared graph, or use PulseAudio mixed playback | Linux only |
+| `--device <name>` | ALSA PCM, PipeWire sink `node.name` / `object.serial`, PulseAudio sink name, or JACK destination-port regex | Linux only |
 | `--buffer <ms>` | Buffer duration, 10–5000 ms; Linux default 100 ms | Windows shared mode / Linux |
 | `--asio` | Use ASIO audio output | Windows only |
 | `--output <wasapi\|asio>` | Select the Windows output backend | Windows only |
-| `--output <alsa\|pipewire\|jack>` | Select the Linux output backend; default ALSA (`--backend` is an alias) | Linux only |
+| `--output <alsa\|pipewire\|jack\|pulseaudio>` | Select the Linux output backend; default ALSA (`--backend` is an alias) | Linux only |
 | `--pipewire-remote <name>` | Select a PipeWire server; otherwise use the standard PipeWire environment/default | Linux only |
 | `--list-pipewire-devices` | List sink names, descriptions, and object serials, then exit | Linux only |
 | `--jack-server <name>` | Select an already running JACK server; otherwise use the JACK default/environment | Linux only |
@@ -166,6 +180,8 @@ sapfs [OPTIONS] <audio_file>
 | `--jack-port <name>` | Repeat once per source channel to specify destination audio input ports in source order | Linux only |
 | `--jack-no-connect` | Route `out_1` through `out_N` manually with a JACK patchbay | Linux only |
 | `--list-jack-ports` | List destination audio input ports and exit; accepts `--jack-server` and `--device` filtering | Linux only |
+| `--pulse-server <address>` | Select a running PulseAudio server; overrides `PULSE_SERVER` | Linux only |
+| `--list-pulseaudio-devices` | List PulseAudio sink names, descriptions and indexes, then exit | Linux only |
 | `--asio-driver <name>` | Use a specific ASIO driver name | Windows only |
 | `--asio-output <n>` | Set the first ASIO output channel, zero-based | Windows only |
 | `--list-asio-drivers` | List installed ASIO drivers and exit | Windows only |
@@ -363,6 +379,58 @@ See the official [JACK client API](https://jackaudio.org/api/group__ClientFuncti
 [callback requirements](https://jackaudio.org/api/group__ClientCallbacks.html), and
 [latency API](https://jackaudio.org/api/group__LatencyFunctions.html).
 
+### PulseAudio playback on Linux
+
+```bash
+# Shared playback through the default sink
+dist/sapfs --output pulseaudio song.flac
+
+# List sinks, then select one by name
+dist/sapfs --list-pulseaudio-devices
+dist/sapfs --output pulseaudio --device alsa_output.usb-DAC.analog-stereo song.wav
+
+# Choose a running server and request a 200 ms server playback queue
+dist/sapfs --output pulseaudio --pulse-server unix:/run/user/1000/pulse/native --buffer 200 song.wav
+```
+
+PulseAudio defaults to shared playback. `--shared` is accepted; `--exclusive`
+is rejected because the PCM client API does not provide exclusive hardware
+ownership. Encoded passthrough is a separate facility and is not an exclusive
+mode for decoded music. For strict hardware playback, use direct ALSA.
+
+The backend sends native little-endian unsigned 8-bit, signed 16/24/32-bit or
+float32 PCM without application resampling, dithering or conversion to float.
+Packed 24-bit, signed 24-bit in the low bits of 32-bit words, and left-aligned
+WAVE extensible PCM containers are distinguished. Speaker masks and standard
+mono-to-7.1 layouts are supplied in source order. This preserves PCM delivery
+**to the server**, including full integer low bits; the server can resample,
+remix channels, mix applications, convert formats and apply gain. There is no
+end-to-end bit-perfect guarantee, including through `pipewire-pulse`.
+
+Without `--device`, routing follows server policy and the stream may be moved.
+An explicit sink is pinned with `PA_STREAM_DONT_MOVE`; missing or removed sinks
+report an error instead of falling back to another device. `--pulse-server`
+overrides `PULSE_SERVER` for this connection; without it, normal PulseAudio
+configuration and environment selection apply. Sapfs disables server autospawn
+and does not change global volume, sample rate, routing policy or configuration.
+
+`--buffer` requests the server-side per-stream queue duration. PulseAudio can
+adjust buffer metrics to suit the sink; the backend honors its writable size and
+retains complete frames under backpressure. Writes go directly to the bounded
+server queue. Pause corks playback while retaining queued data; stop corks
+and flushes it. EOF polls an asynchronous server drain operation, which also
+starts playback for files shorter than the prebuffer. The same stream supports
+repeated drain/write segments for looping. Queue progress uses reported latency;
+EOF completion uses the drain acknowledgement rather than a latency estimate.
+Each output owns an independent threaded mainloop and context. Connection and
+control waits, stalled playback and server failures have bounded error handling
+(five seconds by default). Drain allows the queued playback time plus the
+timeout, excluding time spent paused.
+
+See the official [PulseAudio stream API](https://www.freedesktop.org/software/pulseaudio/doxygen/stream_8h.html),
+[buffer attributes](https://www.freedesktop.org/software/pulseaudio/doxygen/structpa__buffer__attr.html),
+and [threaded mainloop](https://www.freedesktop.org/software/pulseaudio/doxygen/threaded_mainloop.html).
+
 ---
 
 ## Architecture
@@ -384,6 +452,7 @@ main.c
 │   ├── alsa_output.c         # ALSA PCM negotiation, lossless packing and playback
 │   ├── pipewire_output.c     # PipeWire stream, PCM queue, sink discovery and drain
 │   ├── jack_output.c         # JACK client, SPSC float FIFO, port routing and drain
+│   ├── pulseaudio_output.c   # PulseAudio context, native PCM stream, discovery and drain
 │   └── ring_buffer.c         # Thread-safe ring buffer (producer/consumer)
 └── audio_converter.c         # PCM format converters (8/16/24/32-bit ↔ float)
 ```
@@ -397,10 +466,11 @@ File -> [Decoder] -> float PCM -> [Ring Buffer] -> [Output Backend] -> [Device]
 - **Windows (WASAPI)**: A dedicated consumer thread (`_beginthreadex`) drains the ring buffer on `WaitForSingleObject`, registered under MMCSS `Pro Audio` priority.
 - **Windows (ASIO)**: The ASIO driver owns the real-time callback. The callback drains interleaved float PCM from the ring buffer, de-interleaves it into ASIO output channels, and converts to the driver's sample type.
 - **macOS (CoreAudio)**: The AudioUnit engine drives a pull-model render callback on its own real-time thread. The callback drains the ring buffer each time the engine needs a block of samples. Underruns are zero-padded to avoid noise.
-- **Linux**: `audio_output.c` delegates to `linux_output.c`, which owns backend selection and dispatch through a table of operations. PulseAudio can be added as another backend module.
+- **Linux**: `audio_output.c` delegates to `linux_output.c`, which owns backend selection and dispatch through a table of operations. ALSA, PipeWire, JACK and PulseAudio remain separate backend modules.
 - **ALSA**: Uses nonblocking interleaved writes into the device buffer. The player retains partial writes, remains responsive to controls under backpressure, and waits for the device's queued frames at EOF. Underruns and device suspension are recovered where possible.
 - **PipeWire**: Uses an independent `pw_thread_loop` and a bounded, frame-aligned FIFO. Process callbacks and API operations are serialized by the loop; `RT_PROCESS` is deliberately omitted so application locking and error reporting do not run on PipeWire's realtime data thread. The stream negotiates the native application PCM format and channel layout. Server processing follows the selected mode. EOF is an explicit nonblocking drain operation rather than an inference from constant graph latency.
 - **JACK**: The writing thread converts native PCM into a bounded interleaved float SPSC queue. JACK's process callback deinterleaves it into output ports without locks, allocation or I/O. Atomic control acknowledgements coordinate pause/stop with queue resets. Port-connection notifications invalidate an owner-thread routing snapshot so the callback can hold data until every channel is connected.
+- **PulseAudio**: Each output owns a `pa_threaded_mainloop` and context. The native PCM stream starts corked; controls use bounded, acknowledged cork/flush operations. Polled writable sizes limit nonblocking partial writes to the server queue. Asynchronous drain reports EOF completion, including short segments, and can be cancelled on stop/close. Sink enumeration returns a snapshot outside the loop lock.
 
 The Linux application preserves native decoder PCM up to the backend:
 
@@ -408,6 +478,7 @@ The Linux application preserves native decoder PCM up to the backend:
 File -> [Native PCM Decoder] -> [ALSA: optional lossless packing] -> [Device Buffer] -> [Device]
                            \-> [PipeWire FIFO] -> [PipeWire Graph] -> [Sink/Device]
                            \-> [JACK float FIFO] -> [JACK Ports/Graph] -> [Destination]
+                           \-> [PulseAudio PCM Stream] -> [Server Mix/Resampler] -> [Sink/Device]
 ```
 
 The ring buffer implementation is fully cross-platform, using `CRITICAL_SECTION` / `CONDITION_VARIABLE` on Windows and `pthread_mutex_t` / `pthread_cond_t` on POSIX platforms.
@@ -458,6 +529,25 @@ channels, and exercise queue wrap/backpressure, pause/resume, drain/restart,
 period changes, manual/explicit routing, disconnected ports, simultaneous
 clients, rate changes, missing servers and shutdown. Hardware latency and audible
 output still require a physical-device test.
+
+### PulseAudio verification
+
+```bash
+python3 tests/test_pulseaudio.py
+```
+
+Requires `libpulse` development files, PulseAudio, `pactl` and `parec`
+(`pulseaudio` and `pulseaudio-utils` on Debian/Ubuntu). Tests launch a private
+server with null sinks, without touching the desktop server or hardware.
+Capture sinks disable rewinds so monitor samples form deterministic sequences.
+`PULSEAUDIO`, `PACTL`, `PAREC` and `PULSE_MODULE_PATH` can select tools/modules
+outside the usual paths. They verify native client PCM bytes and formats,
+monitor sample sequences, short/empty files, partial writes, pause/resume,
+stop/restart, drain cancellation/reuse, simultaneous clients, sink/server
+selection, eight-channel mapping, shared resampling, argument validation,
+suspension, sink removal, control/connection/stall timeouts and server shutdown.
+Hardware playback and behavior specific to a different PulseAudio-compatible
+server need separate verification.
 
 ---
 

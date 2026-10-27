@@ -9,6 +9,9 @@
 #ifdef SAPFS_HAVE_JACK
 #include "jack_output.h"
 #endif
+#ifdef SAPFS_HAVE_PULSEAUDIO
+#include "pulseaudio_output.h"
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -67,6 +70,12 @@ static int jack_drain_adapter(void* p) { return jack_output_drain(p); }
 static const LinuxAudioOps jack_ops = BACKEND_OPS(jack_output, jack_drain_adapter);
 #endif
 
+#ifdef SAPFS_HAVE_PULSEAUDIO
+BACKEND_ADAPTERS(pulseaudio_output, PulseaudioOutput, PulseaudioConfig)
+static int pulseaudio_drain_adapter(void* p) { return pulseaudio_output_drain(p); }
+static const LinuxAudioOps pulseaudio_ops = BACKEND_OPS(pulseaudio_output, pulseaudio_drain_adapter);
+#endif
+
 struct AudioOutput {
     const LinuxAudioOps* ops;
     void* impl;
@@ -96,6 +105,14 @@ AudioOutput* linux_output_create(const AudioFormat* format, const LinuxAudioConf
         break;
 #else
         snprintf(last_error, sizeof(last_error), "JACK support was not built; install JACK development files and rebuild with WITH_JACK=1");
+        return NULL;
+#endif
+    case LINUX_AUDIO_BACKEND_PULSEAUDIO:
+#ifdef SAPFS_HAVE_PULSEAUDIO
+        ops = &pulseaudio_ops;
+        break;
+#else
+        snprintf(last_error, sizeof(last_error), "PulseAudio support was not built; install libpulse development files and rebuild with WITH_PULSEAUDIO=1");
         return NULL;
 #endif
     default:

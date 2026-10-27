@@ -1,6 +1,7 @@
 #include "audio_decoder/audio_decoder.h"
 #include "audio_output/audio_output.h"
 #include "audio_output/jack_output.h"
+#include "audio_output/pulseaudio_output.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -111,6 +112,15 @@ static void print_jack_port(const char* name, int is_physical, void* user_data) 
 }
 #endif
 
+#if defined(__linux__) && defined(SAPFS_HAVE_PULSEAUDIO)
+static void print_pulseaudio_device(const char* name, const char* description,
+                                   unsigned int index, void* user_data) {
+    int* count = user_data;
+    printf("  %s\n    %s (index %u)\n", name, description, index);
+    ++*count;
+}
+#endif
+
 void setCursorVisible(int visible) {
 #if defined(_WIN32)
     HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -158,12 +168,12 @@ void print_usage(const char* program_name) {
     printf(" --exclusive       Use macOS Core Audio hog mode (bit-perfect)\n");
 #endif
 #ifdef __linux__
-    printf("  --output <name>  Linux backend: alsa (default), pipewire, or jack\n");
-    printf("  --device <name>  ALSA PCM, PipeWire sink, or JACK destination-port regex\n");
+    printf("  --output <name>  Linux backend: alsa (default), pipewire, jack, or pulseaudio\n");
+    printf("  --device <name>  ALSA PCM, PipeWire/PulseAudio sink, or JACK destination-port regex\n");
     printf("  --exclusive      ALSA hardware / PipeWire exclusive linking, no client resampling\n");
-    printf("  --shared         ALSA plugins / PipeWire mixed playback\n");
-    printf("                   Defaults: ALSA exclusive, PipeWire/JACK shared; JACK has no exclusive mode\n");
-    printf("  --buffer <ms>    ALSA hardware / PipeWire/JACK application queue, 10-5000 (default: 100)\n");
+    printf("  --shared         ALSA plugins / PipeWire/PulseAudio mixed playback / JACK graph\n");
+    printf("                   Defaults: ALSA exclusive, PipeWire/JACK/PulseAudio shared; JACK/PulseAudio have no exclusive mode\n");
+    printf("  --buffer <ms>    ALSA hardware / PipeWire/JACK application / PulseAudio server queue, 10-5000 (default: 100)\n");
     printf("  --pipewire-remote <name>  Select a PipeWire server\n");
     printf("  --list-pipewire-devices  List PipeWire playback sinks and exit\n");
     printf("  --jack-server <name>     Select an already running JACK server\n");
@@ -171,6 +181,8 @@ void print_usage(const char* program_name) {
     printf("  --jack-port <name>       Destination for the next source channel; repeat per channel\n");
     printf("  --jack-no-connect        Route out_1..out_N manually with a JACK patchbay\n");
     printf("  --list-jack-ports        List destination audio input ports and exit\n");
+    printf("  --pulse-server <address>  Select an already running PulseAudio server\n");
+    printf("  --list-pulseaudio-devices  List PulseAudio playback sinks and exit\n");
 #endif
     printf("  --loop           Loop playback indefinitely\n");
     printf("  -h, --help       Show this help message\n");
@@ -230,7 +242,8 @@ int play_audio_file(const char* filepath,
                     const char* output_device,
                     const char* linux_backend,
                     const char* pipewire_remote,
-                    const JackConfig* jack_options) {
+                    const JackConfig* jack_options,
+                    const char* pulse_server) {
     AudioDecoder* decoder = NULL;
     AudioOutput* audio = NULL;
     AudioDecoderFormat decoder_format;
@@ -248,6 +261,7 @@ int play_audio_file(const char* filepath,
     (void)linux_backend;
     (void)pipewire_remote;
     (void)jack_options;
+    (void)pulse_server;
     decoder = audio_decoder_open(filepath);
 #endif
     if (!decoder) {
@@ -324,6 +338,7 @@ int play_audio_file(const char* filepath,
         linux_config.backend_config = &alsa_config;
         PipewireConfig pipewire_config = {0};
         JackConfig jack_config = *jack_options;
+        PulseaudioConfig pulse_config = {0};
         if (strcmp(linux_backend, "pipewire") == 0) {
             pipewire_config.mode = use_exclusive ? PIPEWIRE_MODE_EXCLUSIVE : PIPEWIRE_MODE_SHARED;
             pipewire_config.target = output_device;
@@ -334,6 +349,14 @@ int play_audio_file(const char* filepath,
             linux_config.backend_config = &pipewire_config;
             printf("PipeWire %s output: %s\n", use_exclusive ? "exclusive (server/device bit-perfect path unverified)" : "shared",
                    output_device ? output_device : "default sink");
+        } else if (strcmp(linux_backend, "pulseaudio") == 0) {
+            pulse_config.server = pulse_server;
+            pulse_config.device = output_device;
+            pulse_config.stream_name = filepath;
+            pulse_config.buffer_duration_ms = buffer_ms;
+            linux_config.backend = LINUX_AUDIO_BACKEND_PULSEAUDIO;
+            linux_config.backend_config = &pulse_config;
+            printf("PulseAudio shared output: %s\n", output_device ? output_device : "default sink");
         } else if (strcmp(linux_backend, "jack") == 0) {
             jack_config.port_pattern = output_device;
             jack_config.buffer_duration_ms = buffer_ms;
@@ -546,10 +569,12 @@ int main(int argc, char** argv) {
     const char* output_device = NULL;
     const char* linux_backend = "alsa";
     const char* pipewire_remote = NULL;
+    const char* pulse_server = NULL;
     JackConfig jack_config = {0};
 #ifdef __linux__
     int list_pipewire_devices = 0;
     int list_jack_ports = 0;
+    int list_pulseaudio_devices = 0;
     int jack_options_used = 0;
     const char* jack_ports[8] = {0};
 #endif
@@ -652,7 +677,7 @@ int main(int argc, char** argv) {
         }
         else if (strcmp(argv[i], "--device") == 0) {
             if (i + 1 >= argc || argv[i + 1][0] == '-' || !argv[i + 1][0]) {
-                fprintf(stderr, "Error: --device requires an ALSA PCM, PipeWire sink, or JACK port regex\n");
+                fprintf(stderr, "Error: --device requires an ALSA PCM, PipeWire/PulseAudio sink, or JACK port regex\n");
                 restore_terminal_input();
                 setCursorVisible(1);
                 return 1;
@@ -660,8 +685,8 @@ int main(int argc, char** argv) {
             output_device = argv[++i];
         }
         else if (strcmp(argv[i], "--output") == 0 || strcmp(argv[i], "--backend") == 0) {
-            if (i + 1 >= argc || (strcmp(argv[i + 1], "alsa") != 0 && strcmp(argv[i + 1], "pipewire") != 0 && strcmp(argv[i + 1], "jack") != 0)) {
-                fprintf(stderr, "Error: --output must be 'alsa', 'pipewire', or 'jack'\n");
+            if (i + 1 >= argc || (strcmp(argv[i + 1], "alsa") != 0 && strcmp(argv[i + 1], "pipewire") != 0 && strcmp(argv[i + 1], "jack") != 0 && strcmp(argv[i + 1], "pulseaudio") != 0)) {
+                fprintf(stderr, "Error: --output must be 'alsa', 'pipewire', 'jack', or 'pulseaudio'\n");
                 restore_terminal_input();
                 setCursorVisible(1);
                 return 1;
@@ -670,6 +695,16 @@ int main(int argc, char** argv) {
         }
         else if (strcmp(argv[i], "--list-pipewire-devices") == 0) {
             list_pipewire_devices = 1;
+        }
+        else if (strcmp(argv[i], "--list-pulseaudio-devices") == 0) {
+            list_pulseaudio_devices = 1;
+        }
+        else if (strcmp(argv[i], "--pulse-server") == 0) {
+            if (i + 1 >= argc || !argv[i + 1][0] || argv[i + 1][0] == '-') {
+                fprintf(stderr, "Error: --pulse-server requires a server address\n");
+                restore_terminal_input(); setCursorVisible(1); return 1;
+            }
+            pulse_server = argv[++i];
         }
         else if (strcmp(argv[i], "--list-jack-ports") == 0) {
             list_jack_ports = 1;
@@ -755,16 +790,25 @@ int main(int argc, char** argv) {
     
 #ifdef __linux__
     if (use_exclusive < 0) use_exclusive = strcmp(linux_backend, "alsa") == 0;
-    if ((list_jack_ports && list_pipewire_devices) ||
-        (jack_options_used && !list_jack_ports && strcmp(linux_backend, "jack") != 0)) {
+    int listing = list_jack_ports + list_pipewire_devices + list_pulseaudio_devices;
+    if ((listing > 1) ||
+        (jack_options_used && (listing ? !list_jack_ports : strcmp(linux_backend, "jack") != 0))) {
         fprintf(stderr, "Error: choose one port/device list; JACK options require --output jack or --list-jack-ports\n");
         restore_terminal_input(); setCursorVisible(1); return 1;
     }
-    if (use_exclusive && strcmp(linux_backend, "jack") == 0 && !list_jack_ports) {
+    if (use_exclusive && strcmp(linux_backend, "jack") == 0 && !listing) {
         fprintf(stderr, "Error: JACK has no per-client exclusive hardware mode; use --shared or --output alsa --exclusive\n");
         restore_terminal_input(); setCursorVisible(1); return 1;
     }
-    if (pipewire_remote && !list_pipewire_devices && strcmp(linux_backend, "pipewire") != 0) {
+    if (use_exclusive && strcmp(linux_backend, "pulseaudio") == 0 && !listing) {
+        fprintf(stderr, "Error: PulseAudio has no per-client exclusive PCM mode; use --shared or --output alsa --exclusive\n");
+        restore_terminal_input(); setCursorVisible(1); return 1;
+    }
+    if (pulse_server && (listing ? !list_pulseaudio_devices : strcmp(linux_backend, "pulseaudio") != 0)) {
+        fprintf(stderr, "Error: --pulse-server requires --output pulseaudio or --list-pulseaudio-devices\n");
+        restore_terminal_input(); setCursorVisible(1); return 1;
+    }
+    if (pipewire_remote && (listing ? !list_pipewire_devices : strcmp(linux_backend, "pipewire") != 0)) {
         fprintf(stderr, "Error: --pipewire-remote requires --output pipewire\n");
         restore_terminal_input();
         setCursorVisible(1);
@@ -777,6 +821,19 @@ int main(int argc, char** argv) {
         restore_terminal_input();
         setCursorVisible(1);
         return 1;
+    }
+    if (list_pulseaudio_devices) {
+        int status = -1;
+#ifdef SAPFS_HAVE_PULSEAUDIO
+        int count = 0;
+        printf("PulseAudio playback sinks:\n");
+        status = pulseaudio_output_list_devices(pulse_server, print_pulseaudio_device, &count);
+        if (status < 0) fprintf(stderr, "Error: %s\n", pulseaudio_output_get_last_error());
+        else if (!count) printf("  (none found)\n");
+#else
+        fprintf(stderr, "Error: PulseAudio support was not built; rebuild with WITH_PULSEAUDIO=1\n");
+#endif
+        restore_terminal_input(); setCursorVisible(1); return status < 0 ? 1 : 0;
     }
     if (list_pipewire_devices) {
         int status = -1;
@@ -838,7 +895,8 @@ int main(int argc, char** argv) {
                                  output_device,
                                  linux_backend,
                                  pipewire_remote,
-                                 &jack_config);
+                                 &jack_config,
+                                 pulse_server);
     
     setCursorVisible(1);
     

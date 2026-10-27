@@ -6,8 +6,8 @@
 typedef enum {
     LINUX_AUDIO_BACKEND_ALSA = 0,
     LINUX_AUDIO_BACKEND_PIPEWIRE = 1,
-    LINUX_AUDIO_BACKEND_JACK = 2
-    /* PulseAudio can be added here. */
+    LINUX_AUDIO_BACKEND_JACK = 2,
+    LINUX_AUDIO_BACKEND_PULSEAUDIO = 3
 } LinuxAudioBackend;
 
 typedef struct {

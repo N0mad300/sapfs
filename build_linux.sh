@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build sapfs with ALSA and optional PipeWire/JACK output.
+# Build sapfs with ALSA and optional PipeWire/JACK/PulseAudio output.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -42,18 +42,35 @@ elif [ "${WITH_JACK:-auto}" = 1 ]; then
     echo "JACK development files are required (Debian/Ubuntu: libjack-jackd2-dev)." >&2
     exit 1
 fi
+PULSEAUDIO_SRC=()
+PULSEAUDIO_CFLAGS=()
+PULSEAUDIO_LIBS=()
+case "${WITH_PULSEAUDIO:-auto}" in
+    auto|0|1) ;;
+    *) echo "WITH_PULSEAUDIO must be auto, 0, or 1" >&2; exit 1 ;;
+esac
+if [ "${WITH_PULSEAUDIO:-auto}" != 0 ] && pkg-config --exists libpulse; then
+    PULSEAUDIO_SRC=(src/audio_output/pulseaudio_output.c)
+    read -r -a PULSEAUDIO_CFLAGS <<< "$(pkg-config --cflags libpulse)"
+    PULSEAUDIO_CFLAGS+=(-DSAPFS_HAVE_PULSEAUDIO)
+    read -r -a PULSEAUDIO_LIBS <<< "$(pkg-config --libs libpulse)"
+elif [ "${WITH_PULSEAUDIO:-auto}" = 1 ]; then
+    echo "PulseAudio development files are required (Debian/Ubuntu: libpulse-dev)." >&2
+    exit 1
+fi
 read -r -a EXTRA_CFLAGS <<< "${CFLAGS:-}"
 read -r -a EXTRA_LDFLAGS <<< "${LDFLAGS:-}"
 mkdir -p dist
 "${CC:-cc}" -std=c11 -D_DEFAULT_SOURCE -Wall -Wextra -O2 \
-    "${EXTRA_CFLAGS[@]}" "${ALSA_CFLAGS[@]}" "${PIPEWIRE_CFLAGS[@]}" "${JACK_CFLAGS[@]}" \
+    "${EXTRA_CFLAGS[@]}" "${ALSA_CFLAGS[@]}" "${PIPEWIRE_CFLAGS[@]}" "${JACK_CFLAGS[@]}" "${PULSEAUDIO_CFLAGS[@]}" \
     src/main.c src/audio_decoder/audio_decoder.c \
     src/audio_decoder/wave_parser.c src/audio_decoder/flac_parser.c \
     src/audio_decoder/mp3_parser.c src/audio_converter.c \
     src/audio_output/audio_output.c src/audio_output/linux_output.c \
-    src/audio_output/alsa_output.c "${PIPEWIRE_SRC[@]}" "${JACK_SRC[@]}" \
-    "${EXTRA_LDFLAGS[@]}" "${ALSA_LIBS[@]}" "${PIPEWIRE_LIBS[@]}" "${JACK_LIBS[@]}" -pthread -ldl -o dist/sapfs
+    src/audio_output/alsa_output.c "${PIPEWIRE_SRC[@]}" "${JACK_SRC[@]}" "${PULSEAUDIO_SRC[@]}" \
+    "${EXTRA_LDFLAGS[@]}" "${ALSA_LIBS[@]}" "${PIPEWIRE_LIBS[@]}" "${JACK_LIBS[@]}" "${PULSEAUDIO_LIBS[@]}" -pthread -ldl -o dist/sapfs
 BACKENDS="ALSA"
 if [ "${#PIPEWIRE_SRC[@]}" -gt 0 ]; then BACKENDS+=" + PipeWire"; fi
 if [ "${#JACK_SRC[@]}" -gt 0 ]; then BACKENDS+=" + JACK"; fi
+if [ "${#PULSEAUDIO_SRC[@]}" -gt 0 ]; then BACKENDS+=" + PulseAudio"; fi
 echo "Built dist/sapfs ($BACKENDS)"

@@ -16,7 +16,7 @@
  * platform back-end:
  *   Windows  -> WASAPI / ASIO  (windows_output.c)
  *   macOS    -> CoreAudio AudioUnit  (coreaudio_output.c)
- *   Linux    -> ALSA / PipeWire / JACK (linux_output.c)
+ *   Linux    -> ALSA / PipeWire / JACK / PulseAudio (linux_output.c)
  */
 
 AudioOutput* audio_output_init(const AudioFormat* format, AudioOutputConfig config) {
